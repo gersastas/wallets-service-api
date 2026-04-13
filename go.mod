@@ -3,6 +3,7 @@ module github.com/gersastas/wallets-service-api
 go 1.26.1
 
 require (
+	github.com/go-chi/chi/v5 v5.2.5
 	github.com/google/uuid v1.6.0
 	github.com/ilyakaznacheev/cleanenv v1.5.0
 	github.com/sirupsen/logrus v1.9.4
