@@ -7,12 +7,12 @@ import (
 )
 
 type Wallet struct {
-	ID        uuid.UUID
-	UserID    uuid.UUID
-	Name      string
-	Balance   int64
-	Currency  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt *time.Time
+	ID        uuid.UUID  `json:"id"`
+	UserID    uuid.UUID  `json:"user_id"`
+	Name      string     `json:"name"`
+	Balance   int64      `json:"balance"`
+	Currency  string     `json:"currency"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt time.Time  `json:"updated_at"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
