@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"sync"
 	"time"
 
+	"github.com/gersastas/wallets-service-api/internal/database"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -15,15 +15,14 @@ import (
 
 type Server struct {
 	httpServer *http.Server
-	wallets    map[string]*models.Wallet
-	walletsMu  sync.RWMutex
+	repo       *database.WalletRepository
 }
 
-func New(address string) *Server {
+func New(address string, repo *database.WalletRepository) *Server {
 	r := chi.NewRouter()
 
 	s := &Server{
-		wallets: make(map[string]*models.Wallet),
+		repo: repo,
 	}
 
 	r.Post("/wallets", s.handleCreateWallet)
@@ -126,9 +125,11 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 		DeletedAt: nil,
 	}
 
-	s.walletsMu.Lock()
-	s.wallets[walletID.String()] = wallet
-	s.walletsMu.Unlock()
+	if err := s.repo.Create(r.Context(), wallet); err != nil {
+		logrus.WithError(err).Error("failed to create wallet")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	resp := WalletResponse{
 		ID:        wallet.ID.String(),
@@ -144,22 +145,26 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
-	walletID := chi.URLParam(r, "id")
-	if walletID == "" {
+	walletIDStr := chi.URLParam(r, "id")
+	if walletIDStr == "" {
 		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
 		return
 	}
 
-	if _, err := uuid.Parse(walletID); err != nil {
+	walletID, err := uuid.Parse(walletIDStr)
+	if err != nil {
 		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
 		return
 	}
 
-	s.walletsMu.RLock()
-	wallet, exists := s.wallets[walletID]
-	s.walletsMu.RUnlock()
+	wallet, err := s.repo.GetByID(r.Context(), walletID)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get wallet")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
-	if !exists || wallet.DeletedAt != nil {
+	if wallet == nil {
 		s.sendError(w, "wallet not found", http.StatusNotFound)
 		return
 	}
@@ -178,13 +183,14 @@ func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
-	walletID := chi.URLParam(r, "id")
-	if walletID == "" {
+	walletIDStr := chi.URLParam(r, "id")
+	if walletIDStr == "" {
 		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
 		return
 	}
 
-	if _, err := uuid.Parse(walletID); err != nil {
+	walletID, err := uuid.Parse(walletIDStr)
+	if err != nil {
 		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
 		return
 	}
@@ -200,17 +206,26 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.walletsMu.Lock()
-	wallet, exists := s.wallets[walletID]
-	if !exists || wallet.DeletedAt != nil {
-		s.walletsMu.Unlock()
+	wallet, err := s.repo.GetByID(r.Context(), walletID)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get wallet")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if wallet == nil {
 		s.sendError(w, "wallet not found", http.StatusNotFound)
 		return
 	}
 
 	wallet.Name = req.Name
 	wallet.UpdatedAt = time.Now()
-	s.walletsMu.Unlock()
+
+	if err := s.repo.Update(r.Context(), wallet); err != nil {
+		logrus.WithError(err).Error("failed to update wallet")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	resp := WalletResponse{
 		ID:        wallet.ID.String(),
@@ -226,28 +241,23 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
-	walletID := chi.URLParam(r, "id")
-	if walletID == "" {
+	walletIDStr := chi.URLParam(r, "id")
+	if walletIDStr == "" {
 		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
 		return
 	}
 
-	if _, err := uuid.Parse(walletID); err != nil {
+	walletID, err := uuid.Parse(walletIDStr)
+	if err != nil {
 		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
 		return
 	}
 
-	s.walletsMu.Lock()
-	wallet, exists := s.wallets[walletID]
-	if !exists || wallet.DeletedAt != nil {
-		s.walletsMu.Unlock()
-		s.sendError(w, "wallet not found", http.StatusNotFound)
+	if err := s.repo.Delete(r.Context(), walletID); err != nil {
+		logrus.WithError(err).Error("failed to delete wallet")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-
-	now := time.Now()
-	wallet.DeletedAt = &now
-	s.walletsMu.Unlock()
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -265,14 +275,15 @@ func (s *Server) handleListWallets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.walletsMu.RLock()
-	var wallets []*models.Wallet
-	for _, wallet := range s.wallets {
-		if wallet.UserID == userID && wallet.DeletedAt == nil {
-			wallets = append(wallets, wallet)
-		}
+	limit := 10
+	offset := 0
+
+	wallets, err := s.repo.List(r.Context(), userID, limit, offset)
+	if err != nil {
+		logrus.WithError(err).Error("failed to list wallets")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
 	}
-	s.walletsMu.RUnlock()
 
 	var response []WalletResponse
 	for _, wallet := range wallets {
