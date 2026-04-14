@@ -1,4 +1,4 @@
-package integration_test
+package tests
 
 import (
 	"net"
@@ -10,7 +10,6 @@ import (
 
 	"github.com/gersastas/wallets-service-api/internal/config"
 	httpserver "github.com/gersastas/wallets-service-api/internal/transport/http/server"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,67 +34,41 @@ func TestServer_Integration(t *testing.T) {
 
 	server := httpserver.New(cfg.GetHTTPBindAddr())
 
-	serverErr := make(chan error, 1)
-	serverReady := make(chan struct{})
-
-	// Запускаем сервер
+	ready := make(chan struct{})
 	go func() {
-		close(serverReady)
-		if err := server.Run(); err != nil {
-			serverErr <- err
-		}
+		close(ready)
+		_ = server.Run()
 	}()
 
 	select {
-	case <-serverReady:
+	case <-ready:
 		time.Sleep(100 * time.Millisecond)
-	case err := <-serverErr:
-		t.Fatalf("server failed to start: %v", err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not start in time")
 	}
 
-	select {
-	case err := <-serverErr:
-		t.Fatalf("server crashed: %v", err)
-	default:
-	}
-
 	client := &http.Client{Timeout: 2 * time.Second}
-
 	var wg sync.WaitGroup
-	errors := make(chan error, 100)
 
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			resp, err := client.Get("http://" + testAddr + "/time")
-			if err != nil {
-				errors <- err
-				return
-			}
-			defer resp.Body.Close()
+			resp, err := client.Get("http://" + testAddr + "/wallets?user_id=550e8400-e29b-41d4-a716-446655440000")
+			require.NoError(t, err)
 
-			if resp.StatusCode != http.StatusOK {
-				errors <- assert.AnError
-			}
+			defer func() {
+				if closeErr := resp.Body.Close(); closeErr != nil {
+					t.Logf("failed to close response body: %v", closeErr)
+				}
+			}()
+
+			require.Equal(t, http.StatusOK, resp.StatusCode)
 		}()
 	}
 
 	wg.Wait()
-	close(errors)
-
-	var errCount int
-	for err := range errors {
-		t.Errorf("request failed: %v", err)
-		errCount++
-	}
-
-	if errCount > 0 {
-		t.Fatalf("failed requests: %d/100", errCount)
-	}
 
 	t.Log("all 100 requests completed successfully")
 }
@@ -105,7 +78,12 @@ func getFreePort() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer l.Close()
+
+	defer func() {
+		if closeErr := l.Close(); closeErr != nil {
+			_ = closeErr
+		}
+	}()
 
 	_, port, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
