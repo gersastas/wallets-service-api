@@ -16,6 +16,7 @@ type Config struct {
 
 type EnvSetting struct {
 	HTTPBindAddr string `env:"HTTP_BIND_ADDR" env-default:":8080" env-description:"HTTP server bind address"`
+	DatabaseURL  string `env:"DATABASE_URL" env-default:"postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable" env-description:"PostgreSQL connection string"`
 }
 
 func findConfigFile() bool {
@@ -55,4 +56,8 @@ func New() *Config {
 
 func (c *Config) GetHTTPBindAddr() string {
 	return c.env.HTTPBindAddr
+}
+
+func (c *Config) GetDatabaseURL() string {
+	return c.env.DatabaseURL
 }
