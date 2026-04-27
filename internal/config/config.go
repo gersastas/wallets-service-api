@@ -19,9 +19,12 @@ type EnvSetting struct {
 	DatabaseURL  string `env:"DATABASE_URL" env-default:"postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable" env-description:"PostgreSQL connection string"`
 }
 
-func findConfigFile() bool {
+func configFileExists() bool {
 	_, err := os.Stat(envFileName)
-	return err == nil
+	if err != nil {
+		return false
+	}
+	return true
 }
 
 func (e *EnvSetting) GetHelpString() (string, error) {
@@ -34,7 +37,7 @@ func (e *EnvSetting) GetHelpString() (string, error) {
 }
 
 func New() *Config {
-	envSetting := &EnvSetting{}
+	var envSetting = new(EnvSetting)
 
 	helpString, err := envSetting.GetHelpString()
 	if err != nil {
@@ -43,14 +46,16 @@ func New() *Config {
 
 	logrus.Info(helpString)
 
-	if findConfigFile() {
+	if configFileExists() {
 		if err := cleanenv.ReadConfig(envFileName, envSetting); err != nil {
 			logrus.Panicf("failed to read env config: %v", err)
 		}
-	} else if err := cleanenv.ReadEnv(envSetting); err != nil {
+		return &Config{env: envSetting}
+	}
+	
+	if err := cleanenv.ReadEnv(envSetting); err != nil {
 		logrus.Panicf("failed to read env config: %v", err)
 	}
-
 	return &Config{env: envSetting}
 }
 
