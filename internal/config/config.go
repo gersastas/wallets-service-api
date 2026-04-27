@@ -52,10 +52,11 @@ func New() *Config {
 		}
 		return &Config{env: envSetting}
 	}
-	
+
 	if err := cleanenv.ReadEnv(envSetting); err != nil {
 		logrus.Panicf("failed to read env config: %v", err)
 	}
+
 	return &Config{env: envSetting}
 }
 
