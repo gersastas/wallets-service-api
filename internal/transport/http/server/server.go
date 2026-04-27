@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -49,6 +50,10 @@ func (s *Server) Run() error {
 		return nil
 	}
 	return err
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
 }
 
 type CreateWalletRequest struct {
@@ -112,7 +117,12 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	walletID := uuid.New()
-	userID, _ := uuid.Parse(req.UserID)
+
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		s.sendError(w, "invalid user_id", http.StatusBadRequest)
+		return
+	}
 
 	wallet := &models.Wallet{
 		ID:        walletID,
