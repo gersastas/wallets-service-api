@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gersastas/wallets-service-api/internal/config"
 	"github.com/gersastas/wallets-service-api/internal/database"
@@ -33,7 +38,25 @@ func main() {
 
 	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo)
 
-	if err := server.Run(); err != nil {
-		logrus.Panic("HTTP server failed", err)
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		logrus.Infof("starting server on %s", cfg.GetHTTPBindAddr())
+		if err := server.Run(); err != nil {
+			logrus.Fatalf("server failed: %v", err)
+		}
+	}()
+
+	<-quit
+	logrus.Info("shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		logrus.Fatalf("server forced to shutdown: %v", err)
 	}
+
+	logrus.Info("server stopped gracefully")
 }
