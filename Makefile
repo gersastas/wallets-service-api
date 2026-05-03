@@ -1,7 +1,7 @@
 .PHONY: run test lint up down db-shell db-reset
 
 run:
-	go run ./cmd/wallets-service-api/main.go
+	go run ./cmd/service/main.go
 
 test:
 	go test ./tests -v

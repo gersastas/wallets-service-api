@@ -2,24 +2,46 @@ package tests
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/gersastas/wallets-service-api/internal/database"
 	httpserver "github.com/gersastas/wallets-service-api/internal/transport/http/server"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func setupTestServer() *httptest.Server {
-	server := httpserver.New(":8080")
-	return httptest.NewServer(server.Handler())
+// setupTestServer создаёт тестовый сервер с подключением к PostgreSQL
+func setupTestServer(t *testing.T) (*httptest.Server, *sql.DB) {
+	// Подключение к тестовой БД
+	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
+	require.NoError(t, err, "failed to connect to test database")
+
+	// Проверка подключения
+	err = db.Ping()
+	require.NoError(t, err, "failed to ping test database")
+
+	// Очистка таблицы wallets перед каждым тестом
+	_, err = db.Exec("DELETE FROM wallets")
+	require.NoError(t, err, "failed to clean wallets table")
+
+	// Создание репозитория
+	repo := database.NewWalletRepository(db)
+
+	// Создание сервера с репозиторием
+	server := httpserver.New(":8080", repo)
+
+	return httptest.NewServer(server.Handler()), db
 }
 
 func TestCreateWallet_Success(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
 	reqBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
@@ -46,8 +68,9 @@ func TestCreateWallet_Success(t *testing.T) {
 }
 
 func TestCreateWallet_ValidationErrors(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
 	testCases := []struct {
 		name       string
@@ -98,8 +121,9 @@ func TestCreateWallet_ValidationErrors(t *testing.T) {
 }
 
 func TestGetWallet_Success(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
 	createBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
@@ -127,8 +151,9 @@ func TestGetWallet_Success(t *testing.T) {
 }
 
 func TestGetWallet_NotFound(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
 	resp, err := http.Get(ts.URL + "/wallets/550e8400-e29b-41d4-a716-446655440000")
 	require.NoError(t, err)
@@ -138,8 +163,9 @@ func TestGetWallet_NotFound(t *testing.T) {
 }
 
 func TestUpdateWallet_Success(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
 	createBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
@@ -172,10 +198,10 @@ func TestUpdateWallet_Success(t *testing.T) {
 }
 
 func TestDeleteWallet_Success(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
-	// Создаём
 	createBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
 		"name":     "To Delete",
@@ -201,8 +227,9 @@ func TestDeleteWallet_Success(t *testing.T) {
 }
 
 func TestListWallets_Success(t *testing.T) {
-	ts := setupTestServer()
+	ts, db := setupTestServer(t)
 	defer ts.Close()
+	defer db.Close()
 
 	userID := "550e8400-e29b-41d4-a716-446655440000"
 
