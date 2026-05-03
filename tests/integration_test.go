@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"context"
+	"database/sql"
 	"net"
 	"net/http"
 	"os"
@@ -9,11 +11,27 @@ import (
 	"time"
 
 	"github.com/gersastas/wallets-service-api/internal/config"
+	"github.com/gersastas/wallets-service-api/internal/database"
 	httpserver "github.com/gersastas/wallets-service-api/internal/transport/http/server"
+	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
 
 func TestServer_Integration(t *testing.T) {
+	// Подключение к тестовой БД
+	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
+	require.NoError(t, err, "failed to connect to test database")
+	defer db.Close()
+
+	// Проверка подключения
+	err = db.Ping()
+	require.NoError(t, err, "failed to ping test database")
+
+	// Очистка таблицы перед тестом
+	_, err = db.ExecContext(context.Background(), "DELETE FROM wallets")
+	require.NoError(t, err, "failed to clean wallets table")
+
+	// Сохраняем и восстанавливаем оригинальный адрес
 	originalAddr := os.Getenv("HTTP_BIND_ADDR")
 	defer func() {
 		if originalAddr != "" {
@@ -23,6 +41,7 @@ func TestServer_Integration(t *testing.T) {
 		}
 	}()
 
+	// Получаем свободный порт
 	port, err := getFreePort()
 	require.NoError(t, err)
 
@@ -32,14 +51,18 @@ func TestServer_Integration(t *testing.T) {
 	cfg := config.New()
 	require.Equal(t, testAddr, cfg.GetHTTPBindAddr())
 
-	server := httpserver.New(cfg.GetHTTPBindAddr())
+	// Создаём репозиторий и сервер (с PostgreSQL!)
+	walletRepo := database.NewWalletRepository(db)
+	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo)
 
+	// Запускаем сервер
 	ready := make(chan struct{})
 	go func() {
 		close(ready)
 		_ = server.Run()
 	}()
 
+	// Ждём старта сервера
 	select {
 	case <-ready:
 		time.Sleep(100 * time.Millisecond)
@@ -47,6 +70,7 @@ func TestServer_Integration(t *testing.T) {
 		t.Fatal("server did not start in time")
 	}
 
+	// Запускаем 100 параллельных запросов
 	client := &http.Client{Timeout: 2 * time.Second}
 	var wg sync.WaitGroup
 
