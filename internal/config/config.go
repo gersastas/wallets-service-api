@@ -19,7 +19,6 @@ type EnvSetting struct {
 	DatabaseURL  string `env:"DATABASE_URL" env-default:"postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable" env-description:"PostgreSQL connection string"`
 }
 
-// ✅ ИСПРАВЛЕНО lint: Упрощено согласно staticcheck
 func configFileExists() bool {
 	_, err := os.Stat(envFileName)
 	return err == nil

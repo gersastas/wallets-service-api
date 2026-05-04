@@ -18,20 +18,26 @@ import (
 )
 
 func TestServer_Integration(t *testing.T) {
-	// Подключение к тестовой БД
 	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
 	require.NoError(t, err, "failed to connect to test database")
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
-	// Проверка подключения
 	err = db.Ping()
 	require.NoError(t, err, "failed to ping test database")
 
-	// Очистка таблицы перед тестом
+	err = database.RunMigrations(db)
+	require.NoError(t, err, "failed to run migrations")
+
+	_, err = db.ExecContext(context.Background(), "DELETE FROM transactions")
+	require.NoError(t, err, "failed to clean transactions table")
+
 	_, err = db.ExecContext(context.Background(), "DELETE FROM wallets")
 	require.NoError(t, err, "failed to clean wallets table")
 
-	// Сохраняем и восстанавливаем оригинальный адрес
 	originalAddr := os.Getenv("HTTP_BIND_ADDR")
 	defer func() {
 		if originalAddr != "" {
@@ -41,7 +47,6 @@ func TestServer_Integration(t *testing.T) {
 		}
 	}()
 
-	// Получаем свободный порт
 	port, err := getFreePort()
 	require.NoError(t, err)
 
@@ -51,18 +56,16 @@ func TestServer_Integration(t *testing.T) {
 	cfg := config.New()
 	require.Equal(t, testAddr, cfg.GetHTTPBindAddr())
 
-	// Создаём репозиторий и сервер (с PostgreSQL!)
 	walletRepo := database.NewWalletRepository(db)
-	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo)
+	transactionRepo := database.NewTransactionRepository(db)
+	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, db)
 
-	// Запускаем сервер
 	ready := make(chan struct{})
 	go func() {
 		close(ready)
 		_ = server.Run()
 	}()
 
-	// Ждём старта сервера
 	select {
 	case <-ready:
 		time.Sleep(100 * time.Millisecond)
@@ -70,7 +73,6 @@ func TestServer_Integration(t *testing.T) {
 		t.Fatal("server did not start in time")
 	}
 
-	// Запускаем 100 параллельных запросов
 	client := &http.Client{Timeout: 2 * time.Second}
 	var wg sync.WaitGroup
 

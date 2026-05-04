@@ -2,6 +2,7 @@ package tests
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -15,25 +16,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// setupTestServer создаёт тестовый сервер с подключением к PostgreSQL
 func setupTestServer(t *testing.T) (*httptest.Server, *sql.DB) {
-	// Подключение к тестовой БД
 	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
 	require.NoError(t, err, "failed to connect to test database")
 
-	// Проверка подключения
 	err = db.Ping()
 	require.NoError(t, err, "failed to ping test database")
 
-	// Очистка таблицы wallets перед каждым тестом
-	_, err = db.Exec("DELETE FROM wallets")
+	err = database.RunMigrations(db)
+	require.NoError(t, err, "failed to run migrations")
+
+	_, err = db.ExecContext(context.Background(), "DELETE FROM transactions")
+	require.NoError(t, err, "failed to clean transactions table")
+
+	_, err = db.ExecContext(context.Background(), "DELETE FROM wallets")
 	require.NoError(t, err, "failed to clean wallets table")
 
-	// Создание репозитория
-	repo := database.NewWalletRepository(db)
+	walletRepo := database.NewWalletRepository(db)
+	transactionRepo := database.NewTransactionRepository(db)
 
-	// Создание сервера с репозиторием
-	server := httpserver.New(":8080", repo)
+	server := httpserver.New(":8080", walletRepo, transactionRepo, db)
 
 	return httptest.NewServer(server.Handler()), db
 }
@@ -41,7 +43,11 @@ func setupTestServer(t *testing.T) (*httptest.Server, *sql.DB) {
 func TestCreateWallet_Success(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	reqBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
@@ -49,7 +55,9 @@ func TestCreateWallet_Success(t *testing.T) {
 		"currency": "USD",
 	}
 
-	body, _ := json.Marshal(reqBody)
+	body, err := json.Marshal(reqBody)
+	require.NoError(t, err)
+
 	resp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -70,7 +78,11 @@ func TestCreateWallet_Success(t *testing.T) {
 func TestCreateWallet_ValidationErrors(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	testCases := []struct {
 		name       string
@@ -106,7 +118,9 @@ func TestCreateWallet_ValidationErrors(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			body, _ := json.Marshal(tc.body)
+			body, err := json.Marshal(tc.body)
+			require.NoError(t, err)
+
 			resp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
 			require.NoError(t, err)
 			defer func() { _ = resp.Body.Close() }()
@@ -123,15 +137,22 @@ func TestCreateWallet_ValidationErrors(t *testing.T) {
 func TestGetWallet_Success(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	createBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
 		"name":     "Test Wallet",
 		"currency": "USD",
 	}
-	body, _ := json.Marshal(createBody)
-	createResp, _ := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+	body, err := json.Marshal(createBody)
+	require.NoError(t, err)
+
+	createResp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
 	defer func() { _ = createResp.Body.Close() }()
 
 	var created httpserver.WalletResponse
@@ -153,7 +174,11 @@ func TestGetWallet_Success(t *testing.T) {
 func TestGetWallet_NotFound(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	resp, err := http.Get(ts.URL + "/wallets/550e8400-e29b-41d4-a716-446655440000")
 	require.NoError(t, err)
@@ -165,23 +190,33 @@ func TestGetWallet_NotFound(t *testing.T) {
 func TestUpdateWallet_Success(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	createBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
 		"name":     "Old Name",
 		"currency": "USD",
 	}
-	body, _ := json.Marshal(createBody)
-	createResp, _ := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+	body, err := json.Marshal(createBody)
+	require.NoError(t, err)
+
+	createResp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
 	defer func() { _ = createResp.Body.Close() }()
 
 	var created httpserver.WalletResponse
 	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
 
 	updateBody := map[string]string{"name": "New Name"}
-	body, _ = json.Marshal(updateBody)
-	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/wallets/"+created.ID, bytes.NewReader(body))
+	body, err = json.Marshal(updateBody)
+	require.NoError(t, err)
+
+	req, err := http.NewRequest(http.MethodPut, ts.URL+"/wallets/"+created.ID, bytes.NewReader(body))
+	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 
 	updateResp, err := http.DefaultClient.Do(req)
@@ -200,36 +235,51 @@ func TestUpdateWallet_Success(t *testing.T) {
 func TestDeleteWallet_Success(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	createBody := map[string]string{
 		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
 		"name":     "To Delete",
 		"currency": "USD",
 	}
-	body, _ := json.Marshal(createBody)
-	createResp, _ := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+	body, err := json.Marshal(createBody)
+	require.NoError(t, err)
+
+	createResp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
 	defer func() { _ = createResp.Body.Close() }()
 
 	var created httpserver.WalletResponse
 	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
 
-	req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/wallets/"+created.ID, nil)
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/wallets/"+created.ID, nil)
+	require.NoError(t, err)
+
 	deleteResp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = deleteResp.Body.Close() }()
 
 	assert.Equal(t, http.StatusNoContent, deleteResp.StatusCode)
 
-	getResp, _ := http.Get(ts.URL + "/wallets/" + created.ID)
+	getResp, err := http.Get(ts.URL + "/wallets/" + created.ID)
+	require.NoError(t, err)
 	defer func() { _ = getResp.Body.Close() }()
+
 	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
 }
 
 func TestListWallets_Success(t *testing.T) {
 	ts, db := setupTestServer(t)
 	defer ts.Close()
-	defer db.Close()
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Logf("failed to close database: %v", closeErr)
+		}
+	}()
 
 	userID := "550e8400-e29b-41d4-a716-446655440000"
 
@@ -239,8 +289,11 @@ func TestListWallets_Success(t *testing.T) {
 			"name":     "Wallet",
 			"currency": "USD",
 		}
-		body, _ := json.Marshal(createBody)
-		resp, _ := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+		body, err := json.Marshal(createBody)
+		require.NoError(t, err)
+
+		resp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
+		require.NoError(t, err)
 		_ = resp.Body.Close()
 	}
 

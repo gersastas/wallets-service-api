@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ✅ ИСПРАВЛЕНО: НЕ закрываем db в тестах!
 func setupTestServerWithTransactions(t *testing.T) (*http.Client, string, *sql.DB) {
 	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
 	require.NoError(t, err)
@@ -22,11 +21,9 @@ func setupTestServerWithTransactions(t *testing.T) (*http.Client, string, *sql.D
 	err = db.Ping()
 	require.NoError(t, err)
 
-	// Применяем миграции
 	err = database.RunMigrations(db)
 	require.NoError(t, err)
 
-	// Очистка таблиц (сначала transactions из-за FK)
 	_, err = db.Exec("DELETE FROM transactions")
 	require.NoError(t, err)
 
@@ -38,12 +35,10 @@ func setupTestServerWithTransactions(t *testing.T) (*http.Client, string, *sql.D
 
 	server := httpserver.New(":8080", walletRepo, transactionRepo, db)
 
-	// Запускаем сервер в отдельной горутине
 	go func() {
 		_ = server.Run()
 	}()
 
-	// Даём серверу время запуститься
 	time.Sleep(100 * time.Millisecond)
 
 	baseURL := "http://localhost:8080"
@@ -54,7 +49,6 @@ func setupTestServerWithTransactions(t *testing.T) (*http.Client, string, *sql.D
 
 func TestDeposit_Success(t *testing.T) {
 	client, baseURL, _ := setupTestServerWithTransactions(t)
-	// ✅ ИСПРАВЛЕНО: НЕ закрываем db!
 
 	walletID := createTestWallet(t, client, baseURL, "550e8400-e29b-41d4-a716-446655440000", "Test Wallet", "USD")
 

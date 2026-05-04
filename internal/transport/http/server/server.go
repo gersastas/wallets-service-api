@@ -12,7 +12,6 @@ import (
 	"github.com/gersastas/wallets-service-api/internal/database"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -27,32 +26,28 @@ type Server struct {
 func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, db *sql.DB) *Server {
 	r := chi.NewRouter()
 
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-
 	s := &Server{
 		walletRepo:      walletRepo,
 		transactionRepo: transactionRepo,
 		db:              db,
 	}
 
+	// Wallet routes
 	r.Post("/wallets", s.handleCreateWallet)
 	r.Get("/wallets/{id}", s.handleGetWallet)
 	r.Put("/wallets/{id}", s.handleUpdateWallet)
 	r.Delete("/wallets/{id}", s.handleDeleteWallet)
 	r.Get("/wallets", s.handleListWallets)
+
+	// Transaction routes
 	r.Post("/wallets/{id}/deposit", s.handleDeposit)
 	r.Post("/wallets/{id}/withdraw", s.handleWithdraw)
 	r.Post("/wallets/transfer", s.handleTransfer)
 	r.Get("/wallets/{id}/transactions", s.handleListTransactions)
 
 	s.httpServer = &http.Server{
-		Addr:         address,
-		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:    address,
+		Handler: r,
 	}
 
 	return s
@@ -196,20 +191,6 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-func toWalletResponse(w *models.Wallet) WalletResponse {
-	return WalletResponse{
-		ID:        w.ID.String(),
-		UserID:    w.UserID.String(),
-		Name:      w.Name,
-		Balance:   w.Balance,
-		Currency:  w.Currency,
-		CreatedAt: w.CreatedAt,
-		UpdatedAt: w.UpdatedAt,
-	}
-}
-
-// ========== WALLET HANDLERS ==========
-
 func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 	var req CreateWalletRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -248,7 +229,17 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendJSON(w, toWalletResponse(wallet), http.StatusCreated)
+	resp := WalletResponse{
+		ID:        wallet.ID.String(),
+		UserID:    wallet.UserID.String(),
+		Name:      wallet.Name,
+		Balance:   wallet.Balance,
+		Currency:  wallet.Currency,
+		CreatedAt: wallet.CreatedAt,
+		UpdatedAt: wallet.UpdatedAt,
+	}
+
+	s.sendJSON(w, resp, http.StatusCreated)
 }
 
 func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
@@ -276,7 +267,17 @@ func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendJSON(w, toWalletResponse(wallet), http.StatusOK)
+	resp := WalletResponse{
+		ID:        wallet.ID.String(),
+		UserID:    wallet.UserID.String(),
+		Name:      wallet.Name,
+		Balance:   wallet.Balance,
+		Currency:  wallet.Currency,
+		CreatedAt: wallet.CreatedAt,
+		UpdatedAt: wallet.UpdatedAt,
+	}
+
+	s.sendJSON(w, resp, http.StatusOK)
 }
 
 func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
@@ -324,7 +325,17 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.sendJSON(w, toWalletResponse(wallet), http.StatusOK)
+	resp := WalletResponse{
+		ID:        wallet.ID.String(),
+		UserID:    wallet.UserID.String(),
+		Name:      wallet.Name,
+		Balance:   wallet.Balance,
+		Currency:  wallet.Currency,
+		CreatedAt: wallet.CreatedAt,
+		UpdatedAt: wallet.UpdatedAt,
+	}
+
+	s.sendJSON(w, resp, http.StatusOK)
 }
 
 func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
@@ -374,7 +385,15 @@ func (s *Server) handleListWallets(w http.ResponseWriter, r *http.Request) {
 
 	var response []WalletResponse
 	for _, wallet := range wallets {
-		response = append(response, toWalletResponse(wallet))
+		response = append(response, WalletResponse{
+			ID:        wallet.ID.String(),
+			UserID:    wallet.UserID.String(),
+			Name:      wallet.Name,
+			Balance:   wallet.Balance,
+			Currency:  wallet.Currency,
+			CreatedAt: wallet.CreatedAt,
+			UpdatedAt: wallet.UpdatedAt,
+		})
 	}
 
 	s.sendJSON(w, response, http.StatusOK)
