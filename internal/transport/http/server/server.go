@@ -75,6 +75,15 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := s.db.PingContext(r.Context()); err != nil {
+		logrus.WithError(err).Error("database health check failed")
+		s.sendError(w, "database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.sendJSON(w, map[string]string{"status": "ok"}, http.StatusOK)
+}
+
 type CreateWalletRequest struct {
 	UserID   string `json:"user_id"`
 	Name     string `json:"name"`
