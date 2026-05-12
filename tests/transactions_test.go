@@ -60,7 +60,7 @@ func TestDeposit_Success(t *testing.T) {
 
 	resp, err := client.Post(baseURL+"/wallets/"+walletID+"/deposit", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
@@ -88,19 +88,19 @@ func TestDeposit_Idempotency(t *testing.T) {
 	body, _ := json.Marshal(depositReq)
 
 	resp1, _ := client.Post(baseURL+"/wallets/"+walletID+"/deposit", "application/json", bytes.NewReader(body))
-	defer resp1.Body.Close()
+	defer func() { _ = resp1.Body.Close() }()
 	assert.Equal(t, http.StatusCreated, resp1.StatusCode)
 
 	var tx1 httpserver.TransactionResponse
-	json.NewDecoder(resp1.Body).Decode(&tx1)
+	require.NoError(t, json.NewDecoder(resp1.Body).Decode(&tx1))
 
 	body, _ = json.Marshal(depositReq)
 	resp2, _ := client.Post(baseURL+"/wallets/"+walletID+"/deposit", "application/json", bytes.NewReader(body))
-	defer resp2.Body.Close()
+	defer func() { _ = resp2.Body.Close() }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 
 	var tx2 httpserver.TransactionResponse
-	json.NewDecoder(resp2.Body).Decode(&tx2)
+	require.NoError(t, json.NewDecoder(resp2.Body).Decode(&tx2))
 
 	assert.Equal(t, tx1.ID, tx2.ID)
 
@@ -122,12 +122,12 @@ func TestWithdraw_Success(t *testing.T) {
 	body, _ := json.Marshal(withdrawReq)
 
 	resp, _ := client.Post(baseURL+"/wallets/"+walletID+"/withdraw", "application/json", bytes.NewReader(body))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
 	var txResp httpserver.TransactionResponse
-	json.NewDecoder(resp.Body).Decode(&txResp)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&txResp))
 
 	assert.Equal(t, "withdraw", txResp.Type)
 	assert.Equal(t, int64(300), txResp.Amount)
@@ -150,12 +150,12 @@ func TestWithdraw_InsufficientFunds(t *testing.T) {
 	body, _ := json.Marshal(withdrawReq)
 
 	resp, _ := client.Post(baseURL+"/wallets/"+walletID+"/withdraw", "application/json", bytes.NewReader(body))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
 	var errResp httpserver.ErrorResponse
-	json.NewDecoder(resp.Body).Decode(&errResp)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
 	assert.Contains(t, errResp.Error, "insufficient funds")
 
 	wallet := getWallet(t, client, baseURL, walletID)
@@ -179,7 +179,7 @@ func TestTransfer_Success(t *testing.T) {
 	body, _ := json.Marshal(transferReq)
 
 	resp, _ := client.Post(baseURL+"/wallets/transfer", "application/json", bytes.NewReader(body))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
@@ -207,7 +207,7 @@ func TestTransfer_InsufficientFunds(t *testing.T) {
 	body, _ := json.Marshal(transferReq)
 
 	resp, _ := client.Post(baseURL+"/wallets/transfer", "application/json", bytes.NewReader(body))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 
@@ -231,15 +231,15 @@ func TestListTransactions(t *testing.T) {
 		"idempotency_key": "withdraw-1",
 	}
 	body, _ := json.Marshal(withdrawReq)
-	client.Post(baseURL+"/wallets/"+walletID+"/withdraw", "application/json", bytes.NewReader(body))
+	_, _ = client.Post(baseURL+"/wallets/"+walletID+"/withdraw", "application/json", bytes.NewReader(body))
 
 	resp, _ := client.Get(baseURL + "/wallets/" + walletID + "/transactions")
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	var transactions []httpserver.TransactionResponse
-	json.NewDecoder(resp.Body).Decode(&transactions)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&transactions))
 
 	assert.Len(t, transactions, 3)
 
@@ -260,20 +260,20 @@ func createTestWallet(t *testing.T, client *http.Client, baseURL, userID, name, 
 
 	resp, err := client.Post(baseURL+"/wallets", "application/json", bytes.NewReader(body))
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var wallet httpserver.WalletResponse
-	json.NewDecoder(resp.Body).Decode(&wallet)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&wallet))
 	return wallet.ID
 }
 
 func getWallet(t *testing.T, client *http.Client, baseURL, walletID string) httpserver.WalletResponse {
 	resp, err := client.Get(baseURL + "/wallets/" + walletID)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var wallet httpserver.WalletResponse
-	json.NewDecoder(resp.Body).Decode(&wallet)
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&wallet))
 	return wallet
 }
 
@@ -284,5 +284,5 @@ func deposit(t *testing.T, client *http.Client, baseURL, walletID string, amount
 	}
 	body, _ := json.Marshal(depositReq)
 	resp, _ := client.Post(baseURL+"/wallets/"+walletID+"/deposit", "application/json", bytes.NewReader(body))
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 }

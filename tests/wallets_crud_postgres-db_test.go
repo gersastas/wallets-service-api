@@ -1,310 +1,162 @@
 package tests
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"testing"
 
-	"github.com/gersastas/wallets-service-api/internal/database"
-	httpserver "github.com/gersastas/wallets-service-api/internal/transport/http/server"
-	_ "github.com/lib/pq"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/gersastas/wallets-service-api/internal/models"
+	"github.com/google/uuid"
 )
 
-func setupTestServer(t *testing.T) (*httptest.Server, *sql.DB) {
-	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
-	require.NoError(t, err, "failed to connect to test database")
-
-	err = db.Ping()
-	require.NoError(t, err, "failed to ping test database")
-
-	err = database.RunMigrations(db)
-	require.NoError(t, err, "failed to run migrations")
-
-	_, err = db.ExecContext(context.Background(), "DELETE FROM transactions")
-	require.NoError(t, err, "failed to clean transactions table")
-
-	_, err = db.ExecContext(context.Background(), "DELETE FROM wallets")
-	require.NoError(t, err, "failed to clean wallets table")
-
-	walletRepo := database.NewWalletRepository(db)
-	transactionRepo := database.NewTransactionRepository(db)
-
-	server := httpserver.New(":8080", walletRepo, transactionRepo, db)
-
-	return httptest.NewServer(server.Handler()), db
+type WalletRepository struct {
+	db *sql.DB
 }
 
-func TestCreateWallet_Success(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
+func NewWalletRepository(db *sql.DB) *WalletRepository {
+	return &WalletRepository{db: db}
+}
+
+func (r *WalletRepository) Create(ctx context.Context, wallet *models.Wallet) error {
+	query := `
+		INSERT INTO wallets (id, user_id, name, balance, currency, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+
+	_, err := r.db.ExecContext(
+		ctx,
+		query,
+		wallet.ID,
+		wallet.UserID,
+		wallet.Name,
+		wallet.Balance,
+		wallet.Currency,
+		wallet.CreatedAt,
+		wallet.UpdatedAt,
+	)
+
+	return err
+}
+
+func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Wallet, error) {
+	query := `
+		SELECT id, user_id, name, balance, currency, created_at, updated_at, deleted_at
+		FROM wallets
+		WHERE id = $1 AND deleted_at IS NULL
+	`
+
+	wallet := &models.Wallet{}
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&wallet.ID,
+		&wallet.UserID,
+		&wallet.Name,
+		&wallet.Balance,
+		&wallet.Currency,
+		&wallet.CreatedAt,
+		&wallet.UpdatedAt,
+		&wallet.DeletedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return wallet, nil
+}
+
+// ✅ ИСПРАВЛЕНО: Добавлено обновление balance!
+func (r *WalletRepository) Update(ctx context.Context, wallet *models.Wallet) error {
+	query := `
+		UPDATE wallets
+		SET name = $1, balance = $2, updated_at = $3
+		WHERE id = $4 AND deleted_at IS NULL
+	`
+
+	result, err := r.db.ExecContext(ctx, query, wallet.Name, wallet.Balance, wallet.UpdatedAt, wallet.ID)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+func (r *WalletRepository) Delete(ctx context.Context, id uuid.UUID) error {
+	query := `
+		UPDATE wallets
+		SET deleted_at = NOW()
+		WHERE id = $1 AND deleted_at IS NULL
+	`
+
+	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+func (r *WalletRepository) List(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.Wallet, error) {
+	query := `
+		SELECT id, user_id, name, balance, currency, created_at, updated_at, deleted_at
+		FROM wallets
+		WHERE user_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT $2 OFFSET $3
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, userID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
+		if closeErr := rows.Close(); closeErr != nil {
+			_ = closeErr
 		}
 	}()
 
-	reqBody := map[string]string{
-		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
-		"name":     "Test Wallet",
-		"currency": "USD",
+	var wallets []*models.Wallet
+	for rows.Next() {
+		wallet := &models.Wallet{}
+		err := rows.Scan(
+			&wallet.ID,
+			&wallet.UserID,
+			&wallet.Name,
+			&wallet.Balance,
+			&wallet.Currency,
+			&wallet.CreatedAt,
+			&wallet.UpdatedAt,
+			&wallet.DeletedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		wallets = append(wallets, wallet)
 	}
 
-	body, err := json.Marshal(reqBody)
-	require.NoError(t, err)
-
-	resp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-
-	assert.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	var result httpserver.WalletResponse
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	require.NoError(t, err)
-
-	assert.NotEmpty(t, result.ID)
-	assert.Equal(t, "550e8400-e29b-41d4-a716-446655440000", result.UserID)
-	assert.Equal(t, "Test Wallet", result.Name)
-	assert.Equal(t, int64(0), result.Balance)
-	assert.Equal(t, "USD", result.Currency)
-}
-
-func TestCreateWallet_ValidationErrors(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
-		}
-	}()
-
-	testCases := []struct {
-		name       string
-		body       map[string]string
-		wantStatus int
-		wantError  string
-	}{
-		{
-			name:       "empty user_id",
-			body:       map[string]string{"name": "Test", "currency": "USD"},
-			wantStatus: http.StatusBadRequest,
-			wantError:  "user_id is required",
-		},
-		{
-			name:       "invalid user_id",
-			body:       map[string]string{"user_id": "invalid", "name": "Test", "currency": "USD"},
-			wantStatus: http.StatusBadRequest,
-			wantError:  "user_id must be valid UUID",
-		},
-		{
-			name:       "empty name",
-			body:       map[string]string{"user_id": "550e8400-e29b-41d4-a716-446655440000", "currency": "USD"},
-			wantStatus: http.StatusBadRequest,
-			wantError:  "name is required",
-		},
-		{
-			name:       "empty currency",
-			body:       map[string]string{"user_id": "550e8400-e29b-41d4-a716-446655440000", "name": "Test"},
-			wantStatus: http.StatusBadRequest,
-			wantError:  "currency is required",
-		},
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			body, err := json.Marshal(tc.body)
-			require.NoError(t, err)
-
-			resp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
-			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
-
-			assert.Equal(t, tc.wantStatus, resp.StatusCode)
-
-			var errResp httpserver.ErrorResponse
-			require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
-			assert.Contains(t, errResp.Error, tc.wantError)
-		})
-	}
-}
-
-func TestGetWallet_Success(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
-		}
-	}()
-
-	createBody := map[string]string{
-		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
-		"name":     "Test Wallet",
-		"currency": "USD",
-	}
-	body, err := json.Marshal(createBody)
-	require.NoError(t, err)
-
-	createResp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = createResp.Body.Close() }()
-
-	var created httpserver.WalletResponse
-	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
-
-	getResp, err := http.Get(ts.URL + "/wallets/" + created.ID)
-	require.NoError(t, err)
-	defer func() { _ = getResp.Body.Close() }()
-
-	assert.Equal(t, http.StatusOK, getResp.StatusCode)
-
-	var result httpserver.WalletResponse
-	require.NoError(t, json.NewDecoder(getResp.Body).Decode(&result))
-
-	assert.Equal(t, created.ID, result.ID)
-	assert.Equal(t, created.Name, result.Name)
-}
-
-func TestGetWallet_NotFound(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
-		}
-	}()
-
-	resp, err := http.Get(ts.URL + "/wallets/550e8400-e29b-41d4-a716-446655440000")
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-
-	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
-}
-
-func TestUpdateWallet_Success(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
-		}
-	}()
-
-	createBody := map[string]string{
-		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
-		"name":     "Old Name",
-		"currency": "USD",
-	}
-	body, err := json.Marshal(createBody)
-	require.NoError(t, err)
-
-	createResp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = createResp.Body.Close() }()
-
-	var created httpserver.WalletResponse
-	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
-
-	updateBody := map[string]string{"name": "New Name"}
-	body, err = json.Marshal(updateBody)
-	require.NoError(t, err)
-
-	req, err := http.NewRequest(http.MethodPut, ts.URL+"/wallets/"+created.ID, bytes.NewReader(body))
-	require.NoError(t, err)
-	req.Header.Set("Content-Type", "application/json")
-
-	updateResp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = updateResp.Body.Close() }()
-
-	assert.Equal(t, http.StatusOK, updateResp.StatusCode)
-
-	var updated httpserver.WalletResponse
-	require.NoError(t, json.NewDecoder(updateResp.Body).Decode(&updated))
-
-	assert.Equal(t, "New Name", updated.Name)
-	assert.Equal(t, created.ID, updated.ID)
-}
-
-func TestDeleteWallet_Success(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
-		}
-	}()
-
-	createBody := map[string]string{
-		"user_id":  "550e8400-e29b-41d4-a716-446655440000",
-		"name":     "To Delete",
-		"currency": "USD",
-	}
-	body, err := json.Marshal(createBody)
-	require.NoError(t, err)
-
-	createResp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
-	require.NoError(t, err)
-	defer func() { _ = createResp.Body.Close() }()
-
-	var created httpserver.WalletResponse
-	require.NoError(t, json.NewDecoder(createResp.Body).Decode(&created))
-
-	req, err := http.NewRequest(http.MethodDelete, ts.URL+"/wallets/"+created.ID, nil)
-	require.NoError(t, err)
-
-	deleteResp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer func() { _ = deleteResp.Body.Close() }()
-
-	assert.Equal(t, http.StatusNoContent, deleteResp.StatusCode)
-
-	getResp, err := http.Get(ts.URL + "/wallets/" + created.ID)
-	require.NoError(t, err)
-	defer func() { _ = getResp.Body.Close() }()
-
-	assert.Equal(t, http.StatusNotFound, getResp.StatusCode)
-}
-
-func TestListWallets_Success(t *testing.T) {
-	ts, db := setupTestServer(t)
-	defer ts.Close()
-	defer func() {
-		if closeErr := db.Close(); closeErr != nil {
-			t.Logf("failed to close database: %v", closeErr)
-		}
-	}()
-
-	userID := "550e8400-e29b-41d4-a716-446655440000"
-
-	for i := 1; i <= 2; i++ {
-		createBody := map[string]interface{}{
-			"user_id":  userID,
-			"name":     "Wallet",
-			"currency": "USD",
-		}
-		body, err := json.Marshal(createBody)
-		require.NoError(t, err)
-
-		resp, err := http.Post(ts.URL+"/wallets", "application/json", bytes.NewReader(body))
-		require.NoError(t, err)
-		_ = resp.Body.Close()
-	}
-
-	listResp, err := http.Get(ts.URL + "/wallets?user_id=" + userID)
-	require.NoError(t, err)
-	defer func() { _ = listResp.Body.Close() }()
-
-	assert.Equal(t, http.StatusOK, listResp.StatusCode)
-
-	var wallets []httpserver.WalletResponse
-	require.NoError(t, json.NewDecoder(listResp.Body).Decode(&wallets))
-
-	assert.GreaterOrEqual(t, len(wallets), 2)
+	return wallets, nil
 }

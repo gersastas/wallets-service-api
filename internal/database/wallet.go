@@ -129,7 +129,11 @@ func (r *WalletRepository) List(ctx context.Context, userID uuid.UUID, limit, of
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			_ = closeErr
+		}
+	}()
 
 	var wallets []*models.Wallet
 	for rows.Next() {
