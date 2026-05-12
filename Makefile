@@ -4,7 +4,7 @@ run:
 	go run ./cmd/service/main.go
 
 test:
-	go test ./tests -v
+	go test ./... -v
 
 lint:
 	golangci-lint run

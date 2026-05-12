@@ -3,10 +3,10 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
 )
 
 type WalletRepository struct {
@@ -19,8 +19,8 @@ func NewWalletRepository(db *sql.DB) *WalletRepository {
 
 func (r *WalletRepository) Create(ctx context.Context, wallet *models.Wallet) error {
 	query := `
-		INSERT INTO wallets (id, user_id, name, balance, currency, created_at, updated_at, deleted_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO wallets (id, user_id, name, balance, currency, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
 
 	_, err := r.db.ExecContext(
@@ -33,7 +33,6 @@ func (r *WalletRepository) Create(ctx context.Context, wallet *models.Wallet) er
 		wallet.Currency,
 		wallet.CreatedAt,
 		wallet.UpdatedAt,
-		wallet.DeletedAt,
 	)
 
 	return err
@@ -58,7 +57,7 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.W
 		&wallet.DeletedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
@@ -72,11 +71,11 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.W
 func (r *WalletRepository) Update(ctx context.Context, wallet *models.Wallet) error {
 	query := `
 		UPDATE wallets
-		SET name = $1, updated_at = $2
-		WHERE id = $3 AND deleted_at IS NULL
+		SET name = $1, balance = $2, updated_at = $3
+		WHERE id = $4 AND deleted_at IS NULL
 	`
 
-	result, err := r.db.ExecContext(ctx, query, wallet.Name, wallet.UpdatedAt, wallet.ID)
+	result, err := r.db.ExecContext(ctx, query, wallet.Name, wallet.Balance, wallet.UpdatedAt, wallet.ID)
 	if err != nil {
 		return err
 	}
@@ -132,7 +131,6 @@ func (r *WalletRepository) List(ctx context.Context, userID uuid.UUID, limit, of
 	}
 	defer func() {
 		if closeErr := rows.Close(); closeErr != nil {
-			// Логируем ошибку, но не возвращаем её, так как это defer
 			_ = closeErr
 		}
 	}()
@@ -154,6 +152,10 @@ func (r *WalletRepository) List(ctx context.Context, userID uuid.UUID, limit, of
 			return nil, err
 		}
 		wallets = append(wallets, wallet)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	return wallets, nil

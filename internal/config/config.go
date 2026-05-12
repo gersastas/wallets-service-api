@@ -21,10 +21,7 @@ type EnvSetting struct {
 
 func configFileExists() bool {
 	_, err := os.Stat(envFileName)
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
 func (e *EnvSetting) GetHelpString() (string, error) {

@@ -22,7 +22,12 @@ func main() {
 	if err != nil {
 		logrus.Panicf("failed to connect to database: %v", err)
 	}
-	defer db.Close()
+
+	defer func() {
+		if closeErr := db.Close(); closeErr != nil {
+			logrus.Errorf("failed to close database connection: %v", closeErr)
+		}
+	}()
 
 	if err := db.Ping(); err != nil {
 		logrus.Panicf("failed to ping database: %v", err)
@@ -35,8 +40,9 @@ func main() {
 	}
 
 	walletRepo := database.NewWalletRepository(db)
+	transactionRepo := database.NewTransactionRepository(db)
 
-	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo)
+	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, db)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

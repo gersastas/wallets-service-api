@@ -3,6 +3,8 @@ package database
 import (
 	"database/sql"
 	"fmt"
+	"path/filepath"
+	"runtime"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -16,8 +18,10 @@ func RunMigrations(db *sql.DB) error {
 		return fmt.Errorf("could not create migration driver: %w", err)
 	}
 
+	migrationsPath := getMigrationsPath()
+
 	m, err := migrate.NewWithDatabaseInstance(
-		"file://migrations",
+		"file://"+migrationsPath,
 		"postgres",
 		driver,
 	)
@@ -36,4 +40,14 @@ func RunMigrations(db *sql.DB) error {
 	}
 
 	return nil
+}
+
+func getMigrationsPath() string {
+	_, filename, _, _ := runtime.Caller(0)
+
+	projectRoot := filepath.Join(filepath.Dir(filename), "..", "..")
+
+	migrationsPath := filepath.Join(projectRoot, "migrations")
+
+	return migrationsPath
 }
