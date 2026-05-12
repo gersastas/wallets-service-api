@@ -12,6 +12,7 @@ import (
 	"github.com/gersastas/wallets-service-api/internal/database"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -25,6 +26,10 @@ type Server struct {
 
 func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, db *sql.DB) *Server {
 	r := chi.NewRouter()
+
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Logger)
 
 	s := &Server{
 		walletRepo:      walletRepo,
