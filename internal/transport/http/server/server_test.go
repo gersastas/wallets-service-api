@@ -1,4 +1,4 @@
-package tests
+package server
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 
 	"github.com/gersastas/wallets-service-api/internal/config"
 	"github.com/gersastas/wallets-service-api/internal/database"
-	httpserver "github.com/gersastas/wallets-service-api/internal/transport/http/server"
 	_ "github.com/lib/pq"
 	"github.com/stretchr/testify/require"
 )
@@ -58,12 +57,12 @@ func TestServer_Integration(t *testing.T) {
 
 	walletRepo := database.NewWalletRepository(db)
 	transactionRepo := database.NewTransactionRepository(db)
-	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, db)
+	srv := New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, db)
 
 	ready := make(chan struct{})
 	go func() {
 		close(ready)
-		_ = server.Run()
+		_ = srv.Run()
 	}()
 
 	select {
