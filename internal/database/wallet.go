@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/google/uuid"
@@ -56,7 +57,7 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.W
 		&wallet.DeletedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
@@ -67,7 +68,6 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.W
 	return wallet, nil
 }
 
-// ✅ ИСПРАВЛЕНО: Добавлено обновление balance!
 func (r *WalletRepository) Update(ctx context.Context, wallet *models.Wallet) error {
 	query := `
 		UPDATE wallets

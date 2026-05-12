@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/gersastas/wallets-service-api/internal/models"
@@ -97,7 +98,7 @@ func (r *TransactionRepository) GetByID(ctx context.Context, id uuid.UUID) (*mod
 		&tx.CreatedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
@@ -132,7 +133,7 @@ func (r *TransactionRepository) GetByIdempotencyKey(ctx context.Context, key str
 		&tx.CreatedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
