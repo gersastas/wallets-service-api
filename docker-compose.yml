@@ -1,4 +1,17 @@
 services:
+  app:
+    build: .
+    container_name: wallets-service
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/wallet_db?sslmode=disable
+      HTTP_BIND_ADDR: :8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: on-failure
+
   postgres:
     image: postgres:16-alpine
     container_name: postgres-wallet
