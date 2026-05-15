@@ -12,6 +12,7 @@ import (
 	"github.com/gersastas/wallets-service-api/internal/database"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
@@ -25,6 +26,10 @@ type Server struct {
 
 func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, db *sql.DB) *Server {
 	r := chi.NewRouter()
+
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Logger)
 
 	s := &Server{
 		walletRepo:      walletRepo,
@@ -44,6 +49,7 @@ func New(address string, walletRepo *database.WalletRepository, transactionRepo 
 	r.Post("/wallets/{id}/withdraw", s.handleWithdraw)
 	r.Post("/wallets/transfer", s.handleTransfer)
 	r.Get("/wallets/{id}/transactions", s.handleListTransactions)
+	r.Get("/health", s.handleHealth)
 
 	s.httpServer = &http.Server{
 		Addr:    address,
@@ -67,6 +73,15 @@ func (s *Server) Run() error {
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := s.db.PingContext(r.Context()); err != nil {
+		logrus.WithError(err).Error("database health check failed")
+		s.sendError(w, "database unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.sendJSON(w, map[string]string{"status": "ok"}, http.StatusOK)
 }
 
 type CreateWalletRequest struct {

@@ -1,13 +1,19 @@
-.PHONY: run test lint up down db-shell db-reset
+.PHONY: run test lint up down build docker-build db-shell db-reset
 
 run:
 	go run ./cmd/service/main.go
+
+build:
+	go build -o bin/server ./cmd/service/main.go
 
 test:
 	go test ./... -v
 
 lint:
 	golangci-lint run
+
+docker-build:
+	docker build -t wallets-service .
 
 up:
 	docker compose up -d

@@ -1,0 +1,333 @@
+openapi: 3.0.0
+info:
+  title: Wallets Service API
+  version: 1.0.0
+  description: API для управления кошельками и финансовыми операциями
+
+servers:
+  - url: http://localhost:8080
+    description: Local server
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Сервис работает
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /wallets:
+    post:
+      summary: Создать кошелёк
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, name, currency]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                currency:
+                  type: string
+                  example: USD
+      responses:
+        '201':
+          description: Кошелёк создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wallet'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+    get:
+      summary: Список кошельков пользователя
+      parameters:
+        - name: user_id
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Список кошельков
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Wallet'
+
+  /wallets/{id}:
+    get:
+      summary: Получить кошелёк
+      parameters:
+        - $ref: '#/components/parameters/WalletID'
+      responses:
+        '200':
+          description: Кошелёк найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wallet'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      summary: Обновить кошелёк
+      parameters:
+        - $ref: '#/components/parameters/WalletID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+      responses:
+        '200':
+          description: Кошелёк обновлён
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Wallet'
+
+    delete:
+      summary: Удалить кошелёк
+      parameters:
+        - $ref: '#/components/parameters/WalletID'
+      responses:
+        '204':
+          description: Кошелёк удалён
+
+  /wallets/{id}/deposit:
+    post:
+      summary: Пополнить кошелёк
+      parameters:
+        - $ref: '#/components/parameters/WalletID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, idempotency_key]
+              properties:
+                amount:
+                  type: integer
+                  example: 1000
+                idempotency_key:
+                  type: string
+                  example: deposit-123
+      responses:
+        '201':
+          description: Транзакция создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '200':
+          description: Идемпотентный ответ (транзакция уже существует)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+
+  /wallets/{id}/withdraw:
+    post:
+      summary: Снять средства
+      parameters:
+        - $ref: '#/components/parameters/WalletID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, idempotency_key]
+              properties:
+                amount:
+                  type: integer
+                  example: 500
+                idempotency_key:
+                  type: string
+      responses:
+        '201':
+          description: Транзакция создана
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          description: Недостаточно средств
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /wallets/transfer:
+    post:
+      summary: Перевод между кошельками
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [from_wallet_id, to_wallet_id, amount, idempotency_key]
+              properties:
+                from_wallet_id:
+                  type: string
+                  format: uuid
+                to_wallet_id:
+                  type: string
+                  format: uuid
+                amount:
+                  type: integer
+                  example: 300
+                idempotency_key:
+                  type: string
+      responses:
+        '201':
+          description: Перевод выполнен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /wallets/{id}/transactions:
+    get:
+      summary: История транзакций
+      parameters:
+        - $ref: '#/components/parameters/WalletID'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Список транзакций
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transaction'
+
+components:
+  parameters:
+    WalletID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Wallet:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        balance:
+          type: integer
+          description: Баланс в минимальных единицах (центы)
+        currency:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        wallet_id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [deposit, withdraw, transfer]
+        amount:
+          type: integer
+        currency:
+          type: string
+        from_wallet_id:
+          type: string
+          format: uuid
+        to_wallet_id:
+          type: string
+          format: uuid
+        description:
+          type: string
+        idempotency_key:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
