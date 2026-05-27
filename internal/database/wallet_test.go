@@ -29,6 +29,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 	_, err = db.Exec("DELETE FROM wallets")
 	require.NoError(t, err)
 
+	_, err = db.Exec("DELETE FROM users")
+	require.NoError(t, err)
+
 	return db
 }
 
