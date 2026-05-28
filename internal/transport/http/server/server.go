@@ -44,21 +44,25 @@ func New(address string, walletRepo *database.WalletRepository, transactionRepo 
 		jwtSecret:       jwtSecret, // ← NEW
 	}
 
-	// Wallet routes
-	r.Post("/wallets", s.handleCreateWallet)
-	r.Get("/wallets/{id}", s.handleGetWallet)
-	r.Put("/wallets/{id}", s.handleUpdateWallet)
-	r.Delete("/wallets/{id}", s.handleDeleteWallet)
-	r.Get("/wallets", s.handleListWallets)
+		r.Post("/auth/register", s.handleRegister)
+		r.Post("/auth/login", s.handleLogin)
+		r.Get("/health", s.handleHealth)
 
-	// Transaction routes
-	r.Post("/wallets/{id}/deposit", s.handleDeposit)
-	r.Post("/wallets/{id}/withdraw", s.handleWithdraw)
-	r.Post("/wallets/transfer", s.handleTransfer)
-	r.Get("/wallets/{id}/transactions", s.handleListTransactions)
-	r.Get("/health", s.handleHealth)
-	r.Post("/auth/register", s.handleRegister)
-	r.Post("/auth/login", s.handleLogin)
+		r.Group(func(r chi.Router) {
+		r.Use(s.authMiddleware)
+
+		r.Post("/wallets", s.handleCreateWallet)
+		r.Get("/wallets/{id}", s.handleGetWallet)
+		r.Put("/wallets/{id}", s.handleUpdateWallet)
+		r.Delete("/wallets/{id}", s.handleDeleteWallet)
+		r.Get("/wallets", s.handleListWallets)
+
+		r.Post("/wallets/{id}/deposit", s.handleDeposit)
+		r.Post("/wallets/{id}/withdraw", s.handleWithdraw)
+		r.Post("/wallets/transfer", s.handleTransfer)
+		r.Get("/wallets/{id}/transactions", s.handleListTransactions)
+	})
+
 	s.httpServer = &http.Server{
 		Addr:    address,
 		Handler: r,
