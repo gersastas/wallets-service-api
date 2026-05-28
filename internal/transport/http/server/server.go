@@ -39,16 +39,16 @@ func New(address string, walletRepo *database.WalletRepository, transactionRepo 
 	s := &Server{
 		walletRepo:      walletRepo,
 		transactionRepo: transactionRepo,
-		userRepo:        userRepo, // ← NEW
+		userRepo:        userRepo,
 		db:              db,
-		jwtSecret:       jwtSecret, // ← NEW
+		jwtSecret:       jwtSecret,
 	}
 
-		r.Post("/auth/register", s.handleRegister)
-		r.Post("/auth/login", s.handleLogin)
-		r.Get("/health", s.handleHealth)
+	r.Post("/auth/register", s.handleRegister)
+	r.Post("/auth/login", s.handleLogin)
+	r.Get("/health", s.handleHealth)
 
-		r.Group(func(r chi.Router) {
+	r.Group(func(r chi.Router) {
 		r.Use(s.authMiddleware)
 
 		r.Post("/wallets", s.handleCreateWallet)
@@ -97,18 +97,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 type CreateWalletRequest struct {
-	UserID   string `json:"user_id"`
 	Name     string `json:"name"`
 	Currency string `json:"currency"`
 }
 
 func (r *CreateWalletRequest) Validate() error {
-	if r.UserID == "" {
-		return errors.New("user_id is required")
-	}
-	if _, err := uuid.Parse(r.UserID); err != nil {
-		return errors.New("user_id must be valid UUID")
-	}
 	if r.Name == "" {
 		return errors.New("name is required")
 	}
@@ -230,24 +223,21 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	walletID := uuid.New()
-
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		s.sendError(w, "invalid user_id", http.StatusBadRequest)
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
+	now := time.Now()
 	wallet := &models.Wallet{
-		ID:        walletID,
+		ID:        uuid.New(),
 		UserID:    userID,
 		Name:      req.Name,
 		Balance:   0,
 		Currency:  req.Currency,
 		CreatedAt: now,
 		UpdatedAt: now,
-		DeletedAt: nil,
 	}
 
 	if err := s.walletRepo.Create(r.Context(), wallet); err != nil {
@@ -256,7 +246,7 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := WalletResponse{
+	s.sendJSON(w, WalletResponse{
 		ID:        wallet.ID.String(),
 		UserID:    wallet.UserID.String(),
 		Name:      wallet.Name,
@@ -264,9 +254,7 @@ func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 		Currency:  wallet.Currency,
 		CreatedAt: wallet.CreatedAt,
 		UpdatedAt: wallet.UpdatedAt,
-	}
-
-	s.sendJSON(w, resp, http.StatusCreated)
+	}, http.StatusCreated)
 }
 
 func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +282,18 @@ func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := WalletResponse{
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if wallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	s.sendJSON(w, WalletResponse{
 		ID:        wallet.ID.String(),
 		UserID:    wallet.UserID.String(),
 		Name:      wallet.Name,
@@ -302,9 +301,7 @@ func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
 		Currency:  wallet.Currency,
 		CreatedAt: wallet.CreatedAt,
 		UpdatedAt: wallet.UpdatedAt,
-	}
-
-	s.sendJSON(w, resp, http.StatusOK)
+	}, http.StatusOK)
 }
 
 func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
@@ -343,6 +340,17 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if wallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	wallet.Name = req.Name
 	wallet.UpdatedAt = time.Now()
 
@@ -352,7 +360,7 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := WalletResponse{
+	s.sendJSON(w, WalletResponse{
 		ID:        wallet.ID.String(),
 		UserID:    wallet.UserID.String(),
 		Name:      wallet.Name,
@@ -360,9 +368,7 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 		Currency:  wallet.Currency,
 		CreatedAt: wallet.CreatedAt,
 		UpdatedAt: wallet.UpdatedAt,
-	}
-
-	s.sendJSON(w, resp, http.StatusOK)
+	}, http.StatusOK)
 }
 
 func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
@@ -378,6 +384,29 @@ func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get wallet")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if wallet == nil {
+		s.sendError(w, "wallet not found", http.StatusNotFound)
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if wallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
 	if err := s.walletRepo.Delete(r.Context(), walletID); err != nil {
 		logrus.WithError(err).Error("failed to delete wallet")
 		s.sendError(w, "internal server error", http.StatusInternalServerError)
@@ -388,15 +417,9 @@ func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListWallets(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		s.sendError(w, "user_id query parameter is required", http.StatusBadRequest)
-		return
-	}
-
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		s.sendError(w, "invalid user_id", http.StatusBadRequest)
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -458,8 +481,7 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if existingTx != nil {
-		resp := s.transactionToResponse(existingTx)
-		s.sendJSON(w, resp, http.StatusOK)
+		s.sendJSON(w, s.transactionToResponse(existingTx), http.StatusOK)
 		return
 	}
 
@@ -472,6 +494,17 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 
 	if wallet == nil {
 		s.sendError(w, "wallet not found", http.StatusNotFound)
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if wallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -502,8 +535,7 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.transactionToResponse(transaction)
-	s.sendJSON(w, resp, http.StatusCreated)
+	s.sendJSON(w, s.transactionToResponse(transaction), http.StatusCreated)
 }
 
 func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
@@ -538,8 +570,7 @@ func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if existingTx != nil {
-		resp := s.transactionToResponse(existingTx)
-		s.sendJSON(w, resp, http.StatusOK)
+		s.sendJSON(w, s.transactionToResponse(existingTx), http.StatusOK)
 		return
 	}
 
@@ -552,6 +583,17 @@ func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 
 	if wallet == nil {
 		s.sendError(w, "wallet not found", http.StatusNotFound)
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if wallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -587,8 +629,7 @@ func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.transactionToResponse(transaction)
-	s.sendJSON(w, resp, http.StatusCreated)
+	s.sendJSON(w, s.transactionToResponse(transaction), http.StatusCreated)
 }
 
 func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
@@ -611,8 +652,7 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if existingTx != nil {
-		resp := s.transactionToResponse(existingTx)
-		s.sendJSON(w, resp, http.StatusOK)
+		s.sendJSON(w, s.transactionToResponse(existingTx), http.StatusOK)
 		return
 	}
 
@@ -625,6 +665,12 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	toWalletID, err := uuid.Parse(req.ToWalletID)
 	if err != nil {
 		s.sendError(w, "invalid to_wallet_id", http.StatusBadRequest)
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -650,6 +696,11 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 
 	if fromWallet == nil {
 		s.sendError(w, "from_wallet not found", http.StatusNotFound)
+		return
+	}
+
+	if fromWallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -736,8 +787,7 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := s.transactionToResponse(withdrawTx)
-	s.sendJSON(w, resp, http.StatusCreated)
+	s.sendJSON(w, s.transactionToResponse(withdrawTx), http.StatusCreated)
 }
 
 func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) {
@@ -762,6 +812,18 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 
 	if wallet == nil {
 		s.sendError(w, "wallet not found", http.StatusNotFound)
+		return
+	}
+
+	// ✅ Проверяем владельца
+	userID, ok := getUserID(r)
+	if !ok {
+		s.sendError(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if wallet.UserID != userID {
+		s.sendError(w, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -892,17 +954,11 @@ func (s *Server) getWalletForUpdate(ctx context.Context, tx *sql.Tx, walletID uu
 
 	wallet := &models.Wallet{}
 	err := tx.QueryRowContext(ctx, query, walletID).Scan(
-		&wallet.ID,
-		&wallet.UserID,
-		&wallet.Name,
-		&wallet.Balance,
-		&wallet.Currency,
-		&wallet.CreatedAt,
-		&wallet.UpdatedAt,
-		&wallet.DeletedAt,
+		&wallet.ID, &wallet.UserID, &wallet.Name, &wallet.Balance,
+		&wallet.Currency, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.DeletedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
@@ -919,7 +975,6 @@ func (s *Server) updateWalletInTx(ctx context.Context, tx *sql.Tx, wallet *model
 		SET name = $1, balance = $2, updated_at = $3
 		WHERE id = $4
 	`
-
 	_, err := tx.ExecContext(ctx, query, wallet.Name, wallet.Balance, wallet.UpdatedAt, wallet.ID)
 	return err
 }
