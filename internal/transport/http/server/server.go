@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gersastas/wallets-service-api/internal/database"
@@ -945,6 +946,40 @@ func (s *Server) transactionToResponse(tx *models.Transaction) TransactionRespon
 	}
 
 	return resp
+}
+
+type contextKey string
+
+const userIDKey contextKey = "userID"
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			s.sendError(w, "authorization header required", http.StatusUnauthorized)
+			return
+		}
+
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			s.sendError(w, "invalid authorization header format", http.StatusUnauthorized)
+			return
+		}
+
+		claims, err := jwtutil.Validate(parts[1], s.jwtSecret)
+		if err != nil {
+			s.sendError(w, "invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), userIDKey, claims.UserID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func getUserID(r *http.Request) (uuid.UUID, bool) {
+	userID, ok := r.Context().Value(userIDKey).(uuid.UUID)
+	return userID, ok
 }
 
 func (s *Server) sendJSON(w http.ResponseWriter, data interface{}, status int) {
