@@ -41,8 +41,16 @@ func main() {
 
 	walletRepo := database.NewWalletRepository(db)
 	transactionRepo := database.NewTransactionRepository(db)
+	userRepo := database.NewUserRepository(db)
 
-	server := httpserver.New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, db)
+	server := httpserver.New(
+		cfg.GetHTTPBindAddr(),
+		walletRepo,
+		transactionRepo,
+		userRepo,           // ← NEW
+		db,
+		cfg.GetJWTSecret(), // ← NEW
+	)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
