@@ -57,7 +57,7 @@ func TestServer_Integration(t *testing.T) {
 
 	walletRepo := database.NewWalletRepository(db)
 	transactionRepo := database.NewTransactionRepository(db)
-	srv := New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, db)
+	srv := New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, database.NewUserRepository(db), db, cfg.GetJWTSecret())
 
 	ready := make(chan struct{})
 	go func() {

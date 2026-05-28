@@ -10,21 +10,25 @@ import (
 	"time"
 
 	"github.com/gersastas/wallets-service-api/internal/database"
+	jwtutil "github.com/gersastas/wallets-service-api/internal/jwt"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
 	httpServer      *http.Server
 	walletRepo      *database.WalletRepository
 	transactionRepo *database.TransactionRepository
+	userRepo        *database.UserRepository
 	db              *sql.DB
+	jwtSecret       string
 }
 
-func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, db *sql.DB) *Server {
+func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, userRepo *database.UserRepository, db *sql.DB, jwtSecret string) *Server {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
@@ -34,7 +38,9 @@ func New(address string, walletRepo *database.WalletRepository, transactionRepo 
 	s := &Server{
 		walletRepo:      walletRepo,
 		transactionRepo: transactionRepo,
+		userRepo:        userRepo, // ← NEW
 		db:              db,
+		jwtSecret:       jwtSecret, // ← NEW
 	}
 
 	// Wallet routes
@@ -50,7 +56,8 @@ func New(address string, walletRepo *database.WalletRepository, transactionRepo 
 	r.Post("/wallets/transfer", s.handleTransfer)
 	r.Get("/wallets/{id}/transactions", s.handleListTransactions)
 	r.Get("/health", s.handleHealth)
-
+	r.Post("/auth/register", s.handleRegister)
+	r.Post("/auth/login", s.handleLogin)
 	s.httpServer = &http.Server{
 		Addr:    address,
 		Handler: r,
@@ -769,6 +776,105 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.sendJSON(w, response, http.StatusOK)
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Email == "" {
+		s.sendError(w, "email is required", http.StatusBadRequest)
+		return
+	}
+
+	if req.Password == "" {
+		s.sendError(w, "password is required", http.StatusBadRequest)
+		return
+	}
+
+	existing, err := s.userRepo.GetByEmail(r.Context(), req.Email)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get user by email")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if existing != nil {
+		s.sendError(w, "email already taken", http.StatusConflict)
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		logrus.WithError(err).Error("failed to hash password")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	now := time.Now()
+	user := &models.User{
+		ID:           uuid.New(),
+		Email:        req.Email,
+		PasswordHash: string(hash),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if err := s.userRepo.Create(r.Context(), user); err != nil {
+		logrus.WithError(err).Error("failed to create user")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	s.sendJSON(w, map[string]string{
+		"id":    user.ID.String(),
+		"email": user.Email,
+	}, http.StatusCreated)
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	user, err := s.userRepo.GetByEmail(r.Context(), req.Email)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get user by email")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	if user == nil {
+		s.sendError(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		s.sendError(w, "invalid credentials", http.StatusUnauthorized)
+		return
+	}
+
+	token, err := jwtutil.Generate(user.ID, s.jwtSecret)
+	if err != nil {
+		logrus.WithError(err).Error("failed to generate token")
+		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	s.sendJSON(w, map[string]string{"token": token}, http.StatusOK)
 }
 
 func (s *Server) getWalletForUpdate(ctx context.Context, tx *sql.Tx, walletID uuid.UUID) (*models.Wallet, error) {
