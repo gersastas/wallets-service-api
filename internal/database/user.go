@@ -6,7 +6,6 @@ import (
 	"errors"
 
 	"github.com/gersastas/wallets-service-api/internal/models"
-	"github.com/google/uuid"
 )
 
 type UserRepository struct {
@@ -49,7 +48,7 @@ func (r *UserRepository) GetByEmail(ctx context.Context, email string) (*models.
 	return user, nil
 }
 
-func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+func (r *UserRepository) GetByID(ctx context.Context, id string) (*models.User, error) {
 	query := `
 		SELECT id, email, password_hash, created_at, updated_at
 		FROM users

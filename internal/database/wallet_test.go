@@ -40,8 +40,8 @@ func TestWalletRepository_Create(t *testing.T) {
 	repo := NewWalletRepository(db)
 
 	wallet := &models.Wallet{
-		ID:        uuid.New(),
-		UserID:    uuid.New(),
+		ID:        uuid.NewString(),
+		UserID:    uuid.NewString(),
 		Name:      "Test Wallet",
 		Balance:   0,
 		Currency:  "USD",
@@ -65,7 +65,7 @@ func TestWalletRepository_GetByID_NotFound(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewWalletRepository(db)
 
-	got, err := repo.GetByID(context.Background(), uuid.New())
+	got, err := repo.GetByID(context.Background(), uuid.NewString())
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -75,8 +75,8 @@ func TestWalletRepository_Update(t *testing.T) {
 	repo := NewWalletRepository(db)
 
 	wallet := &models.Wallet{
-		ID:        uuid.New(),
-		UserID:    uuid.New(),
+		ID:        uuid.NewString(),
+		UserID:    uuid.NewString(),
 		Name:      "Old Name",
 		Balance:   0,
 		Currency:  "USD",
@@ -105,8 +105,8 @@ func TestWalletRepository_Delete(t *testing.T) {
 	repo := NewWalletRepository(db)
 
 	wallet := &models.Wallet{
-		ID:        uuid.New(),
-		UserID:    uuid.New(),
+		ID:        uuid.NewString(),
+		UserID:    uuid.NewString(),
 		Name:      "To Delete",
 		Balance:   0,
 		Currency:  "USD",
@@ -128,11 +128,11 @@ func TestWalletRepository_List(t *testing.T) {
 	db := setupTestDB(t)
 	repo := NewWalletRepository(db)
 
-	userID := uuid.New()
+	userID := uuid.NewString()
 
 	for i := 0; i < 3; i++ {
 		wallet := &models.Wallet{
-			ID:        uuid.New(),
+			ID:        uuid.NewString(),
 			UserID:    userID,
 			Name:      "Wallet",
 			Balance:   0,

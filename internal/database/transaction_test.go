@@ -18,14 +18,14 @@ func TestTransactionRepository_Create(t *testing.T) {
 	txRepo := NewTransactionRepository(db)
 
 	wallet := &models.Wallet{
-		ID: uuid.New(), UserID: uuid.New(),
+		ID: uuid.NewString(), UserID: uuid.NewString(),
 		Name: "Test", Balance: 0, Currency: "USD",
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	require.NoError(t, walletRepo.Create(context.Background(), wallet))
 
 	tx := &models.Transaction{
-		ID:          uuid.New(),
+		ID:          uuid.NewString(),
 		WalletID:    wallet.ID,
 		Type:        models.TransactionTypeDeposit,
 		Amount:      1000,
@@ -44,14 +44,14 @@ func TestTransactionRepository_GetByID(t *testing.T) {
 	txRepo := NewTransactionRepository(db)
 
 	wallet := &models.Wallet{
-		ID: uuid.New(), UserID: uuid.New(),
+		ID: uuid.NewString(), UserID: uuid.NewString(),
 		Name: "Test", Balance: 0, Currency: "USD",
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	require.NoError(t, walletRepo.Create(context.Background(), wallet))
 
 	tx := &models.Transaction{
-		ID:          uuid.New(),
+		ID:          uuid.NewString(),
 		WalletID:    wallet.ID,
 		Type:        models.TransactionTypeDeposit,
 		Amount:      500,
@@ -75,7 +75,7 @@ func TestTransactionRepository_GetByIdempotencyKey(t *testing.T) {
 	txRepo := NewTransactionRepository(db)
 
 	wallet := &models.Wallet{
-		ID: uuid.New(), UserID: uuid.New(),
+		ID: uuid.NewString(), UserID: uuid.NewString(),
 		Name: "Test", Balance: 0, Currency: "USD",
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
@@ -83,7 +83,7 @@ func TestTransactionRepository_GetByIdempotencyKey(t *testing.T) {
 
 	key := "test-key-123"
 	tx := &models.Transaction{
-		ID:             uuid.New(),
+		ID:             uuid.NewString(),
 		WalletID:       wallet.ID,
 		Type:           models.TransactionTypeDeposit,
 		Amount:         1000,
@@ -115,7 +115,7 @@ func TestTransactionRepository_ListByWallet(t *testing.T) {
 	txRepo := NewTransactionRepository(db)
 
 	wallet := &models.Wallet{
-		ID: uuid.New(), UserID: uuid.New(),
+		ID: uuid.NewString(), UserID: uuid.NewString(),
 		Name: "Test", Balance: 0, Currency: "USD",
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
@@ -123,7 +123,7 @@ func TestTransactionRepository_ListByWallet(t *testing.T) {
 
 	for i := 1; i <= 3; i++ {
 		tx := &models.Transaction{
-			ID:          uuid.New(),
+			ID:          uuid.NewString(),
 			WalletID:    wallet.ID,
 			Type:        models.TransactionTypeDeposit,
 			Amount:      int64(100 * i),
