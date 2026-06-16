@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gersastas/wallets-service-api/internal/database"
-	jwtutil "github.com/gersastas/wallets-service-api/internal/jwt"
+	"github.com/gersastas/wallets-service-api/internal/auth"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -934,7 +934,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := jwtutil.Generate(user.ID, s.jwtSecret)
+	token, err := auth.Generate(user.ID, s.jwtSecret)
 	if err != nil {
 		logrus.WithError(err).Error("failed to generate token")
 		s.sendError(w, "internal server error", http.StatusInternalServerError)
@@ -1025,7 +1025,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		claims, err := jwtutil.Validate(parts[1], s.jwtSecret)
+		claims, err := auth.Validate(parts[1], s.jwtSecret)
 		if err != nil {
 			s.sendError(w, "invalid token", http.StatusUnauthorized)
 			return

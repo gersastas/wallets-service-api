@@ -1,4 +1,4 @@
-package jwtutil
+package auth
 
 import (
 	"fmt"
