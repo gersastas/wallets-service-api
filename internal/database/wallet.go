@@ -6,7 +6,6 @@ import (
 	"errors"
 
 	"github.com/gersastas/wallets-service-api/internal/models"
-	"github.com/google/uuid"
 )
 
 type WalletRepository struct {
@@ -22,23 +21,14 @@ func (r *WalletRepository) Create(ctx context.Context, wallet *models.Wallet) er
 		INSERT INTO wallets (id, user_id, name, balance, currency, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
-
-	_, err := r.db.ExecContext(
-		ctx,
-		query,
-		wallet.ID,
-		wallet.UserID,
-		wallet.Name,
-		wallet.Balance,
-		wallet.Currency,
-		wallet.CreatedAt,
-		wallet.UpdatedAt,
+	_, err := r.db.ExecContext(ctx, query,
+		wallet.ID, wallet.UserID, wallet.Name, wallet.Balance,
+		wallet.Currency, wallet.CreatedAt, wallet.UpdatedAt,
 	)
-
 	return err
 }
 
-func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Wallet, error) {
+func (r *WalletRepository) GetByID(ctx context.Context, id string) (*models.Wallet, error) {
 	query := `
 		SELECT id, user_id, name, balance, currency, created_at, updated_at, deleted_at
 		FROM wallets
@@ -47,20 +37,13 @@ func (r *WalletRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.W
 
 	wallet := &models.Wallet{}
 	err := r.db.QueryRowContext(ctx, query, id).Scan(
-		&wallet.ID,
-		&wallet.UserID,
-		&wallet.Name,
-		&wallet.Balance,
-		&wallet.Currency,
-		&wallet.CreatedAt,
-		&wallet.UpdatedAt,
-		&wallet.DeletedAt,
+		&wallet.ID, &wallet.UserID, &wallet.Name, &wallet.Balance,
+		&wallet.Currency, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.DeletedAt,
 	)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
-
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +75,7 @@ func (r *WalletRepository) Update(ctx context.Context, wallet *models.Wallet) er
 	return nil
 }
 
-func (r *WalletRepository) Delete(ctx context.Context, id uuid.UUID) error {
+func (r *WalletRepository) Delete(ctx context.Context, id string) error {
 	query := `
 		UPDATE wallets
 		SET deleted_at = NOW()
@@ -116,7 +99,7 @@ func (r *WalletRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (r *WalletRepository) List(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*models.Wallet, error) {
+func (r *WalletRepository) List(ctx context.Context, userID string, limit, offset int) ([]*models.Wallet, error) {
 	query := `
 		SELECT id, user_id, name, balance, currency, created_at, updated_at, deleted_at
 		FROM wallets
@@ -139,14 +122,8 @@ func (r *WalletRepository) List(ctx context.Context, userID uuid.UUID, limit, of
 	for rows.Next() {
 		wallet := &models.Wallet{}
 		err := rows.Scan(
-			&wallet.ID,
-			&wallet.UserID,
-			&wallet.Name,
-			&wallet.Balance,
-			&wallet.Currency,
-			&wallet.CreatedAt,
-			&wallet.UpdatedAt,
-			&wallet.DeletedAt,
+			&wallet.ID, &wallet.UserID, &wallet.Name, &wallet.Balance,
+			&wallet.Currency, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.DeletedAt,
 		)
 		if err != nil {
 			return nil, err

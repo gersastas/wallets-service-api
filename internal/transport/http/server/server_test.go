@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -18,24 +20,22 @@ import (
 
 func TestServer_Integration(t *testing.T) {
 	db, err := sql.Open("postgres", "postgres://postgres:postgres@localhost:5432/wallet_db?sslmode=disable")
-	require.NoError(t, err, "failed to connect to test database")
+	require.NoError(t, err)
 	defer func() {
 		if closeErr := db.Close(); closeErr != nil {
 			t.Logf("failed to close database: %v", closeErr)
 		}
 	}()
 
-	err = db.Ping()
-	require.NoError(t, err, "failed to ping test database")
-
-	err = database.RunMigrations(db)
-	require.NoError(t, err, "failed to run migrations")
+	require.NoError(t, db.Ping())
+	require.NoError(t, database.RunMigrations(db))
 
 	_, err = db.ExecContext(context.Background(), "DELETE FROM transactions")
-	require.NoError(t, err, "failed to clean transactions table")
-
+	require.NoError(t, err)
 	_, err = db.ExecContext(context.Background(), "DELETE FROM wallets")
-	require.NoError(t, err, "failed to clean wallets table")
+	require.NoError(t, err)
+	_, err = db.ExecContext(context.Background(), "DELETE FROM users")
+	require.NoError(t, err)
 
 	originalAddr := os.Getenv("HTTP_BIND_ADDR")
 	defer func() {
@@ -53,11 +53,15 @@ func TestServer_Integration(t *testing.T) {
 	require.NoError(t, os.Setenv("HTTP_BIND_ADDR", testAddr))
 
 	cfg := config.New()
-	require.Equal(t, testAddr, cfg.GetHTTPBindAddr())
 
-	walletRepo := database.NewWalletRepository(db)
-	transactionRepo := database.NewTransactionRepository(db)
-	srv := New(cfg.GetHTTPBindAddr(), walletRepo, transactionRepo, database.NewUserRepository(db), db, cfg.GetJWTSecret())
+	srv := New(
+		cfg.GetHTTPBindAddr(),
+		database.NewWalletRepository(db),
+		database.NewTransactionRepository(db),
+		database.NewUserRepository(db),
+		db,
+		cfg.GetJWTSecret(),
+	)
 
 	ready := make(chan struct{})
 	go func() {
@@ -72,17 +76,41 @@ func TestServer_Integration(t *testing.T) {
 		t.Fatal("server did not start in time")
 	}
 
+	baseURL := "http://" + testAddr
 	client := &http.Client{Timeout: 2 * time.Second}
-	var wg sync.WaitGroup
 
+	// Регистрация
+	regBody, _ := json.Marshal(map[string]string{"email": "test@test.com", "password": "secret123"})
+	regResp, err := client.Post(baseURL+"/auth/register", "application/json", bytes.NewReader(regBody))
+	require.NoError(t, err)
+	defer func() { _ = regResp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, regResp.StatusCode)
+
+	// Логин
+	loginBody, _ := json.Marshal(map[string]string{"email": "test@test.com", "password": "secret123"})
+	loginResp, err := client.Post(baseURL+"/auth/login", "application/json", bytes.NewReader(loginBody))
+	require.NoError(t, err)
+	defer func() { _ = loginResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, loginResp.StatusCode)
+
+	var loginResult map[string]string
+	require.NoError(t, json.NewDecoder(loginResp.Body).Decode(&loginResult))
+	token := loginResult["token"]
+	require.NotEmpty(t, token)
+
+	// 100 параллельных запросов с токеном
+	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			resp, err := client.Get("http://" + testAddr + "/wallets?user_id=550e8400-e29b-41d4-a716-446655440000")
-			require.NoError(t, err)
+			req, reqErr := http.NewRequest(http.MethodGet, baseURL+"/wallets", nil)
+			require.NoError(t, reqErr)
+			req.Header.Set("Authorization", "Bearer "+token)
 
+			resp, respErr := client.Do(req)
+			require.NoError(t, respErr)
 			defer func() {
 				if closeErr := resp.Body.Close(); closeErr != nil {
 					t.Logf("failed to close response body: %v", closeErr)
@@ -94,7 +122,6 @@ func TestServer_Integration(t *testing.T) {
 	}
 
 	wg.Wait()
-
 	t.Log("all 100 requests completed successfully")
 }
 
@@ -103,17 +130,14 @@ func getFreePort() (string, error) {
 	if err != nil {
 		return "", err
 	}
-
 	defer func() {
 		if closeErr := l.Close(); closeErr != nil {
 			_ = closeErr
 		}
 	}()
-
 	_, port, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
 		return "", err
 	}
-
 	return port, nil
 }

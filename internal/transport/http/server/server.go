@@ -7,17 +7,23 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/gersastas/wallets-service-api/internal/auth"
 	"github.com/gersastas/wallets-service-api/internal/database"
-	jwtutil "github.com/gersastas/wallets-service-api/internal/jwt"
 	"github.com/gersastas/wallets-service-api/internal/models"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/render"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type contextKey string
+
+const userIDKey contextKey = "userID"
 
 type Server struct {
 	httpServer      *http.Server
@@ -28,82 +34,12 @@ type Server struct {
 	jwtSecret       string
 }
 
-func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, userRepo *database.UserRepository, db *sql.DB, jwtSecret string) *Server {
-	r := chi.NewRouter()
-
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Logger)
-
-	s := &Server{
-		walletRepo:      walletRepo,
-		transactionRepo: transactionRepo,
-		userRepo:        userRepo, // ← NEW
-		db:              db,
-		jwtSecret:       jwtSecret, // ← NEW
-	}
-
-	// Wallet routes
-	r.Post("/wallets", s.handleCreateWallet)
-	r.Get("/wallets/{id}", s.handleGetWallet)
-	r.Put("/wallets/{id}", s.handleUpdateWallet)
-	r.Delete("/wallets/{id}", s.handleDeleteWallet)
-	r.Get("/wallets", s.handleListWallets)
-
-	// Transaction routes
-	r.Post("/wallets/{id}/deposit", s.handleDeposit)
-	r.Post("/wallets/{id}/withdraw", s.handleWithdraw)
-	r.Post("/wallets/transfer", s.handleTransfer)
-	r.Get("/wallets/{id}/transactions", s.handleListTransactions)
-	r.Get("/health", s.handleHealth)
-	r.Post("/auth/register", s.handleRegister)
-	r.Post("/auth/login", s.handleLogin)
-	s.httpServer = &http.Server{
-		Addr:    address,
-		Handler: r,
-	}
-
-	return s
-}
-
-func (s *Server) Handler() http.Handler {
-	return s.httpServer.Handler
-}
-
-func (s *Server) Run() error {
-	err := s.httpServer.ListenAndServe()
-	if errors.Is(err, http.ErrServerClosed) {
-		return nil
-	}
-	return err
-}
-
-func (s *Server) Shutdown(ctx context.Context) error {
-	return s.httpServer.Shutdown(ctx)
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if err := s.db.PingContext(r.Context()); err != nil {
-		logrus.WithError(err).Error("database health check failed")
-		s.sendError(w, "database unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	s.sendJSON(w, map[string]string{"status": "ok"}, http.StatusOK)
-}
-
 type CreateWalletRequest struct {
-	UserID   string `json:"user_id"`
 	Name     string `json:"name"`
 	Currency string `json:"currency"`
 }
 
 func (r *CreateWalletRequest) Validate() error {
-	if r.UserID == "" {
-		return errors.New("user_id is required")
-	}
-	if _, err := uuid.Parse(r.UserID); err != nil {
-		return errors.New("user_id must be valid UUID")
-	}
 	if r.Name == "" {
 		return errors.New("name is required")
 	}
@@ -213,128 +149,309 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
-func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
-	var req CreateWalletRequest
+func New(address string, walletRepo *database.WalletRepository, transactionRepo *database.TransactionRepository, userRepo *database.UserRepository, db *sql.DB, jwtSecret string) *Server {
+	r := chi.NewRouter()
+
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.Logger)
+
+	s := &Server{
+		walletRepo:      walletRepo,
+		transactionRepo: transactionRepo,
+		userRepo:        userRepo,
+		db:              db,
+		jwtSecret:       jwtSecret,
+	}
+
+	r.Post("/auth/register", s.handleRegister)
+	r.Post("/auth/login", s.handleLogin)
+	r.Get("/health", s.handleHealth)
+
+	r.Group(func(r chi.Router) {
+		r.Use(s.authMiddleware)
+
+		r.Post("/wallets", s.handleCreateWallet)
+		r.Get("/wallets/{id}", s.handleGetWallet)
+		r.Put("/wallets/{id}", s.handleUpdateWallet)
+		r.Delete("/wallets/{id}", s.handleDeleteWallet)
+		r.Get("/wallets", s.handleListWallets)
+
+		r.Post("/wallets/{id}/deposit", s.handleDeposit)
+		r.Post("/wallets/{id}/withdraw", s.handleWithdraw)
+		r.Post("/wallets/transfer", s.handleTransfer)
+		r.Get("/wallets/{id}/transactions", s.handleListTransactions)
+	})
+
+	s.httpServer = &http.Server{
+		Addr:    address,
+		Handler: r,
+	}
+
+	return s
+}
+
+func (s *Server) Handler() http.Handler {
+	return s.httpServer.Handler
+}
+
+func (s *Server) Run() error {
+	err := s.httpServer.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.httpServer.Shutdown(ctx)
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := s.db.PingContext(r.Context()); err != nil {
+		logrus.WithError(err).Error("database health check failed")
+		render.Status(r, http.StatusServiceUnavailable)
+		render.JSON(w, r, ErrorResponse{Error: "database unavailable"})
+		return
+	}
+	render.JSON(w, r, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid json", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid request body"})
 		return
 	}
 
-	if err := req.Validate(); err != nil {
-		s.sendError(w, err.Error(), http.StatusBadRequest)
+	if req.Email == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "email is required"})
+		return
+	}
+
+	if req.Password == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "password is required"})
+		return
+	}
+
+	existing, err := s.userRepo.GetByEmail(r.Context(), req.Email)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get user by email")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	if existing != nil {
+		render.Status(r, http.StatusConflict)
+		render.JSON(w, r, ErrorResponse{Error: "email already taken"})
+		return
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		logrus.WithError(err).Error("failed to hash password")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	now := time.Now()
-	walletID := uuid.New()
+	user := &models.User{
+		ID:           uuid.NewString(),
+		Email:        req.Email,
+		PasswordHash: string(hash),
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
 
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		s.sendError(w, "invalid user_id", http.StatusBadRequest)
+	if err := s.userRepo.Create(r.Context(), user); err != nil {
+		logrus.WithError(err).Error("failed to create user")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
+	render.Status(r, http.StatusCreated)
+	render.JSON(w, r, map[string]string{"id": user.ID, "email": user.Email})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid request body"})
+		return
+	}
+
+	user, err := s.userRepo.GetByEmail(r.Context(), req.Email)
+	if err != nil {
+		logrus.WithError(err).Error("failed to get user by email")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	if user == nil {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "invalid credentials"})
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "invalid credentials"})
+		return
+	}
+
+	token, err := auth.Generate(user.ID, s.jwtSecret)
+	if err != nil {
+		logrus.WithError(err).Error("failed to generate token")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	render.JSON(w, r, map[string]string{"token": token})
+}
+
+func (s *Server) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
+	var req CreateWalletRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid json"})
+		return
+	}
+
+	if err := req.Validate(); err != nil {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: err.Error()})
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
+	}
+
+	now := time.Now()
 	wallet := &models.Wallet{
-		ID:        walletID,
+		ID:        uuid.NewString(),
 		UserID:    userID,
 		Name:      req.Name,
 		Balance:   0,
 		Currency:  req.Currency,
 		CreatedAt: now,
 		UpdatedAt: now,
-		DeletedAt: nil,
 	}
 
 	if err := s.walletRepo.Create(r.Context(), wallet); err != nil {
 		logrus.WithError(err).Error("failed to create wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	resp := WalletResponse{
-		ID:        wallet.ID.String(),
-		UserID:    wallet.UserID.String(),
-		Name:      wallet.Name,
-		Balance:   wallet.Balance,
-		Currency:  wallet.Currency,
-		CreatedAt: wallet.CreatedAt,
-		UpdatedAt: wallet.UpdatedAt,
-	}
-
-	s.sendJSON(w, resp, http.StatusCreated)
+	render.Status(r, http.StatusCreated)
+	render.JSON(w, r, walletToResponse(wallet))
 }
 
 func (s *Server) handleGetWallet(w http.ResponseWriter, r *http.Request) {
-	walletIDStr := chi.URLParam(r, "id")
-	if walletIDStr == "" {
-		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
-		return
-	}
-
-	walletID, err := uuid.Parse(walletIDStr)
-	if err != nil {
-		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
+	walletID := chi.URLParam(r, "id")
+	if walletID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "wallet_id is required"})
 		return
 	}
 
 	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if wallet == nil {
-		s.sendError(w, "wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "wallet not found"})
 		return
 	}
 
-	resp := WalletResponse{
-		ID:        wallet.ID.String(),
-		UserID:    wallet.UserID.String(),
-		Name:      wallet.Name,
-		Balance:   wallet.Balance,
-		Currency:  wallet.Currency,
-		CreatedAt: wallet.CreatedAt,
-		UpdatedAt: wallet.UpdatedAt,
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
 	}
 
-	s.sendJSON(w, resp, http.StatusOK)
+	if wallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
+		return
+	}
+
+	render.JSON(w, r, walletToResponse(wallet))
 }
 
 func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
-	walletIDStr := chi.URLParam(r, "id")
-	if walletIDStr == "" {
-		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
-		return
-	}
-
-	walletID, err := uuid.Parse(walletIDStr)
-	if err != nil {
-		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
+	walletID := chi.URLParam(r, "id")
+	if walletID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "wallet_id is required"})
 		return
 	}
 
 	var req UpdateWalletRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid json", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid json"})
 		return
 	}
 
 	if err := req.Validate(); err != nil {
-		s.sendError(w, err.Error(), http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: err.Error()})
 		return
 	}
 
 	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if wallet == nil {
-		s.sendError(w, "wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "wallet not found"})
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
+	}
+
+	if wallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
 		return
 	}
 
@@ -343,39 +460,53 @@ func (s *Server) handleUpdateWallet(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.walletRepo.Update(r.Context(), wallet); err != nil {
 		logrus.WithError(err).Error("failed to update wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	resp := WalletResponse{
-		ID:        wallet.ID.String(),
-		UserID:    wallet.UserID.String(),
-		Name:      wallet.Name,
-		Balance:   wallet.Balance,
-		Currency:  wallet.Currency,
-		CreatedAt: wallet.CreatedAt,
-		UpdatedAt: wallet.UpdatedAt,
-	}
-
-	s.sendJSON(w, resp, http.StatusOK)
+	render.JSON(w, r, walletToResponse(wallet))
 }
 
 func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
-	walletIDStr := chi.URLParam(r, "id")
-	if walletIDStr == "" {
-		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
+	walletID := chi.URLParam(r, "id")
+	if walletID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "wallet_id is required"})
 		return
 	}
 
-	walletID, err := uuid.Parse(walletIDStr)
+	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
 	if err != nil {
-		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
+		logrus.WithError(err).Error("failed to get wallet")
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
+		return
+	}
+
+	if wallet == nil {
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "wallet not found"})
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
+	}
+
+	if wallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
 		return
 	}
 
 	if err := s.walletRepo.Delete(r.Context(), walletID); err != nil {
 		logrus.WithError(err).Error("failed to delete wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
@@ -383,96 +514,93 @@ func (s *Server) handleDeleteWallet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListWallets(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		s.sendError(w, "user_id query parameter is required", http.StatusBadRequest)
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
 		return
 	}
 
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		s.sendError(w, "invalid user_id", http.StatusBadRequest)
-		return
-	}
-
-	limit := 10
-	offset := 0
-
-	wallets, err := s.walletRepo.List(r.Context(), userID, limit, offset)
+	wallets, err := s.walletRepo.List(r.Context(), userID, 10, 0)
 	if err != nil {
 		logrus.WithError(err).Error("failed to list wallets")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	var response []WalletResponse
+	response := make([]WalletResponse, 0, len(wallets))
 	for _, wallet := range wallets {
-		response = append(response, WalletResponse{
-			ID:        wallet.ID.String(),
-			UserID:    wallet.UserID.String(),
-			Name:      wallet.Name,
-			Balance:   wallet.Balance,
-			Currency:  wallet.Currency,
-			CreatedAt: wallet.CreatedAt,
-			UpdatedAt: wallet.UpdatedAt,
-		})
+		response = append(response, walletToResponse(wallet))
 	}
 
-	s.sendJSON(w, response, http.StatusOK)
+	render.JSON(w, r, response)
 }
 
 func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
-	walletIDStr := chi.URLParam(r, "id")
-	if walletIDStr == "" {
-		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
-		return
-	}
-
-	walletID, err := uuid.Parse(walletIDStr)
-	if err != nil {
-		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
+	walletID := chi.URLParam(r, "id")
+	if walletID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "wallet_id is required"})
 		return
 	}
 
 	var req DepositRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid json", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid json"})
 		return
 	}
 
 	if err := req.Validate(); err != nil {
-		s.sendError(w, err.Error(), http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: err.Error()})
 		return
 	}
 
 	existingTx, err := s.transactionRepo.GetByIdempotencyKey(r.Context(), req.IdempotencyKey)
 	if err != nil {
 		logrus.WithError(err).Error("failed to check idempotency")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if existingTx != nil {
-		resp := s.transactionToResponse(existingTx)
-		s.sendJSON(w, resp, http.StatusOK)
+		render.JSON(w, r, transactionToResponse(existingTx))
 		return
 	}
 
 	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if wallet == nil {
-		s.sendError(w, "wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "wallet not found"})
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
+	}
+
+	if wallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
 		return
 	}
 
 	now := time.Now()
 	transaction := &models.Transaction{
-		ID:             uuid.New(),
+		ID:             uuid.NewString(),
 		WalletID:       walletID,
 		Type:           models.TransactionTypeDeposit,
 		Amount:         req.Amount,
@@ -487,77 +615,92 @@ func (s *Server) handleDeposit(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.transactionRepo.Create(r.Context(), transaction); err != nil {
 		logrus.WithError(err).Error("failed to create transaction")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if err := s.walletRepo.Update(r.Context(), wallet); err != nil {
 		logrus.WithError(err).Error("failed to update wallet balance")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	resp := s.transactionToResponse(transaction)
-	s.sendJSON(w, resp, http.StatusCreated)
+	render.Status(r, http.StatusCreated)
+	render.JSON(w, r, transactionToResponse(transaction))
 }
 
 func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
-	walletIDStr := chi.URLParam(r, "id")
-	if walletIDStr == "" {
-		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
-		return
-	}
-
-	walletID, err := uuid.Parse(walletIDStr)
-	if err != nil {
-		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
+	walletID := chi.URLParam(r, "id")
+	if walletID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "wallet_id is required"})
 		return
 	}
 
 	var req WithdrawRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid json", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid json"})
 		return
 	}
 
 	if err := req.Validate(); err != nil {
-		s.sendError(w, err.Error(), http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: err.Error()})
 		return
 	}
 
 	existingTx, err := s.transactionRepo.GetByIdempotencyKey(r.Context(), req.IdempotencyKey)
 	if err != nil {
 		logrus.WithError(err).Error("failed to check idempotency")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if existingTx != nil {
-		resp := s.transactionToResponse(existingTx)
-		s.sendJSON(w, resp, http.StatusOK)
+		render.JSON(w, r, transactionToResponse(existingTx))
 		return
 	}
 
 	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if wallet == nil {
-		s.sendError(w, "wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "wallet not found"})
+		return
+	}
+
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
+	}
+
+	if wallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
 		return
 	}
 
 	if wallet.Balance < req.Amount {
-		s.sendError(w, "insufficient funds", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "insufficient funds"})
 		return
 	}
 
 	now := time.Now()
 	transaction := &models.Transaction{
-		ID:             uuid.New(),
+		ID:             uuid.NewString(),
 		WalletID:       walletID,
 		Type:           models.TransactionTypeWithdraw,
 		Amount:         req.Amount,
@@ -572,101 +715,113 @@ func (s *Server) handleWithdraw(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.transactionRepo.Create(r.Context(), transaction); err != nil {
 		logrus.WithError(err).Error("failed to create transaction")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if err := s.walletRepo.Update(r.Context(), wallet); err != nil {
 		logrus.WithError(err).Error("failed to update wallet balance")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	resp := s.transactionToResponse(transaction)
-	s.sendJSON(w, resp, http.StatusCreated)
+	render.Status(r, http.StatusCreated)
+	render.JSON(w, r, transactionToResponse(transaction))
 }
 
 func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 	var req TransferRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid json", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "invalid json"})
 		return
 	}
 
 	if err := req.Validate(); err != nil {
-		s.sendError(w, err.Error(), http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: err.Error()})
 		return
 	}
 
 	existingTx, err := s.transactionRepo.GetByIdempotencyKey(r.Context(), req.IdempotencyKey)
 	if err != nil {
 		logrus.WithError(err).Error("failed to check idempotency")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if existingTx != nil {
-		resp := s.transactionToResponse(existingTx)
-		s.sendJSON(w, resp, http.StatusOK)
+		render.JSON(w, r, transactionToResponse(existingTx))
 		return
 	}
 
-	fromWalletID, err := uuid.Parse(req.FromWalletID)
-	if err != nil {
-		s.sendError(w, "invalid from_wallet_id", http.StatusBadRequest)
-		return
-	}
-
-	toWalletID, err := uuid.Parse(req.ToWalletID)
-	if err != nil {
-		s.sendError(w, "invalid to_wallet_id", http.StatusBadRequest)
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
 		return
 	}
 
 	dbTx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		logrus.WithError(err).Error("failed to begin transaction")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	defer func() {
-		if rollbackErr := dbTx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
+		if rollbackErr := dbTx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
 			logrus.WithError(rollbackErr).Error("failed to rollback transaction")
 		}
 	}()
 
-	fromWallet, err := s.getWalletForUpdate(r.Context(), dbTx, fromWalletID)
+	fromWallet, err := s.getWalletForUpdate(r.Context(), dbTx, req.FromWalletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get from_wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if fromWallet == nil {
-		s.sendError(w, "from_wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "from_wallet not found"})
 		return
 	}
 
-	toWallet, err := s.getWalletForUpdate(r.Context(), dbTx, toWalletID)
+	if fromWallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
+		return
+	}
+
+	toWallet, err := s.getWalletForUpdate(r.Context(), dbTx, req.ToWalletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get to_wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if toWallet == nil {
-		s.sendError(w, "to_wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "to_wallet not found"})
 		return
 	}
 
 	if fromWallet.Currency != toWallet.Currency {
-		s.sendError(w, "currency mismatch", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "currency mismatch"})
 		return
 	}
 
 	if fromWallet.Balance < req.Amount {
-		s.sendError(w, "insufficient funds", http.StatusBadRequest)
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "insufficient funds"})
 		return
 	}
 
@@ -678,206 +833,148 @@ func (s *Server) handleTransfer(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.updateWalletInTx(r.Context(), dbTx, fromWallet); err != nil {
 		logrus.WithError(err).Error("failed to update from_wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if err := s.updateWalletInTx(r.Context(), dbTx, toWallet); err != nil {
 		logrus.WithError(err).Error("failed to update to_wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	withdrawTx := &models.Transaction{
-		ID:             uuid.New(),
-		WalletID:       fromWalletID,
+		ID:             uuid.NewString(),
+		WalletID:       req.FromWalletID,
 		Type:           models.TransactionTypeTransfer,
 		Amount:         req.Amount,
 		Currency:       fromWallet.Currency,
-		FromWalletID:   &fromWalletID,
-		ToWalletID:     &toWalletID,
-		Description:    fmt.Sprintf("Transfer to %s", toWalletID.String()),
+		FromWalletID:   &req.FromWalletID,
+		ToWalletID:     &req.ToWalletID,
+		Description:    fmt.Sprintf("Transfer to %s", req.ToWalletID),
 		IdempotencyKey: &req.IdempotencyKey,
 		CreatedAt:      now,
 	}
 
 	depositTx := &models.Transaction{
-		ID:           uuid.New(),
-		WalletID:     toWalletID,
+		ID:           uuid.NewString(),
+		WalletID:     req.ToWalletID,
 		Type:         models.TransactionTypeTransfer,
 		Amount:       req.Amount,
 		Currency:     toWallet.Currency,
-		FromWalletID: &fromWalletID,
-		ToWalletID:   &toWalletID,
-		Description:  fmt.Sprintf("Transfer from %s", fromWalletID.String()),
+		FromWalletID: &req.FromWalletID,
+		ToWalletID:   &req.ToWalletID,
+		Description:  fmt.Sprintf("Transfer from %s", req.FromWalletID),
 		CreatedAt:    now,
 	}
 
 	if err := s.transactionRepo.CreateWithTx(r.Context(), dbTx, withdrawTx); err != nil {
 		logrus.WithError(err).Error("failed to create withdraw transaction")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if err := s.transactionRepo.CreateWithTx(r.Context(), dbTx, depositTx); err != nil {
 		logrus.WithError(err).Error("failed to create deposit transaction")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if err := dbTx.Commit(); err != nil {
 		logrus.WithError(err).Error("failed to commit transaction")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	resp := s.transactionToResponse(withdrawTx)
-	s.sendJSON(w, resp, http.StatusCreated)
+	render.Status(r, http.StatusCreated)
+	render.JSON(w, r, transactionToResponse(withdrawTx))
 }
 
 func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) {
-	walletIDStr := chi.URLParam(r, "id")
-	if walletIDStr == "" {
-		s.sendError(w, "wallet_id is required", http.StatusBadRequest)
-		return
-	}
-
-	walletID, err := uuid.Parse(walletIDStr)
-	if err != nil {
-		s.sendError(w, "invalid wallet_id", http.StatusBadRequest)
+	walletID := chi.URLParam(r, "id")
+	if walletID == "" {
+		render.Status(r, http.StatusBadRequest)
+		render.JSON(w, r, ErrorResponse{Error: "wallet_id is required"})
 		return
 	}
 
 	wallet, err := s.walletRepo.GetByID(r.Context(), walletID)
 	if err != nil {
 		logrus.WithError(err).Error("failed to get wallet")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
 	if wallet == nil {
-		s.sendError(w, "wallet not found", http.StatusNotFound)
+		render.Status(r, http.StatusNotFound)
+		render.JSON(w, r, ErrorResponse{Error: "wallet not found"})
 		return
 	}
 
-	limit := 10
-	offset := 0
+	userID, ok := getUserID(r)
+	if !ok {
+		render.Status(r, http.StatusUnauthorized)
+		render.JSON(w, r, ErrorResponse{Error: "unauthorized"})
+		return
+	}
 
-	transactions, err := s.transactionRepo.ListByWallet(r.Context(), walletID, limit, offset)
+	if wallet.UserID != userID {
+		render.Status(r, http.StatusForbidden)
+		render.JSON(w, r, ErrorResponse{Error: "forbidden"})
+		return
+	}
+
+	transactions, err := s.transactionRepo.ListByWallet(r.Context(), walletID, 10, 0)
 	if err != nil {
 		logrus.WithError(err).Error("failed to list transactions")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
+		render.Status(r, http.StatusInternalServerError)
+		render.JSON(w, r, ErrorResponse{Error: "internal server error"})
 		return
 	}
 
-	var response []TransactionResponse
+	response := make([]TransactionResponse, 0, len(transactions))
 	for _, tx := range transactions {
-		response = append(response, s.transactionToResponse(tx))
+		response = append(response, transactionToResponse(tx))
 	}
 
-	s.sendJSON(w, response, http.StatusOK)
+	render.JSON(w, r, response)
 }
 
-func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, ErrorResponse{Error: "authorization header required"})
+			return
+		}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, ErrorResponse{Error: "invalid authorization header format"})
+			return
+		}
 
-	if req.Email == "" {
-		s.sendError(w, "email is required", http.StatusBadRequest)
-		return
-	}
+		claims, err := auth.Validate(parts[1], s.jwtSecret)
+		if err != nil {
+			render.Status(r, http.StatusUnauthorized)
+			render.JSON(w, r, ErrorResponse{Error: "invalid token"})
+			return
+		}
 
-	if req.Password == "" {
-		s.sendError(w, "password is required", http.StatusBadRequest)
-		return
-	}
-
-	existing, err := s.userRepo.GetByEmail(r.Context(), req.Email)
-	if err != nil {
-		logrus.WithError(err).Error("failed to get user by email")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if existing != nil {
-		s.sendError(w, "email already taken", http.StatusConflict)
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		logrus.WithError(err).Error("failed to hash password")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	now := time.Now()
-	user := &models.User{
-		ID:           uuid.New(),
-		Email:        req.Email,
-		PasswordHash: string(hash),
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-
-	if err := s.userRepo.Create(r.Context(), user); err != nil {
-		logrus.WithError(err).Error("failed to create user")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	s.sendJSON(w, map[string]string{
-		"id":    user.ID.String(),
-		"email": user.Email,
-	}, http.StatusCreated)
+		ctx := context.WithValue(r.Context(), userIDKey, claims.UserID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
-func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	user, err := s.userRepo.GetByEmail(r.Context(), req.Email)
-	if err != nil {
-		logrus.WithError(err).Error("failed to get user by email")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	if user == nil {
-		s.sendError(w, "invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
-		s.sendError(w, "invalid credentials", http.StatusUnauthorized)
-		return
-	}
-
-	token, err := jwtutil.Generate(user.ID, s.jwtSecret)
-	if err != nil {
-		logrus.WithError(err).Error("failed to generate token")
-		s.sendError(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	s.sendJSON(w, map[string]string{"token": token}, http.StatusOK)
-}
-
-func (s *Server) getWalletForUpdate(ctx context.Context, tx *sql.Tx, walletID uuid.UUID) (*models.Wallet, error) {
+func (s *Server) getWalletForUpdate(ctx context.Context, tx *sql.Tx, walletID string) (*models.Wallet, error) {
 	query := `
 		SELECT id, user_id, name, balance, currency, created_at, updated_at, deleted_at
 		FROM wallets
@@ -887,17 +984,11 @@ func (s *Server) getWalletForUpdate(ctx context.Context, tx *sql.Tx, walletID uu
 
 	wallet := &models.Wallet{}
 	err := tx.QueryRowContext(ctx, query, walletID).Scan(
-		&wallet.ID,
-		&wallet.UserID,
-		&wallet.Name,
-		&wallet.Balance,
-		&wallet.Currency,
-		&wallet.CreatedAt,
-		&wallet.UpdatedAt,
-		&wallet.DeletedAt,
+		&wallet.ID, &wallet.UserID, &wallet.Name, &wallet.Balance,
+		&wallet.Currency, &wallet.CreatedAt, &wallet.UpdatedAt, &wallet.DeletedAt,
 	)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 
@@ -914,15 +1005,31 @@ func (s *Server) updateWalletInTx(ctx context.Context, tx *sql.Tx, wallet *model
 		SET name = $1, balance = $2, updated_at = $3
 		WHERE id = $4
 	`
-
 	_, err := tx.ExecContext(ctx, query, wallet.Name, wallet.Balance, wallet.UpdatedAt, wallet.ID)
 	return err
 }
 
-func (s *Server) transactionToResponse(tx *models.Transaction) TransactionResponse {
+func getUserID(r *http.Request) (string, bool) {
+	userID, ok := r.Context().Value(userIDKey).(string)
+	return userID, ok
+}
+
+func walletToResponse(wallet *models.Wallet) WalletResponse {
+	return WalletResponse{
+		ID:        wallet.ID,
+		UserID:    wallet.UserID,
+		Name:      wallet.Name,
+		Balance:   wallet.Balance,
+		Currency:  wallet.Currency,
+		CreatedAt: wallet.CreatedAt,
+		UpdatedAt: wallet.UpdatedAt,
+	}
+}
+
+func transactionToResponse(tx *models.Transaction) TransactionResponse {
 	resp := TransactionResponse{
-		ID:          tx.ID.String(),
-		WalletID:    tx.WalletID.String(),
+		ID:          tx.ID,
+		WalletID:    tx.WalletID,
 		Type:        string(tx.Type),
 		Amount:      tx.Amount,
 		Currency:    tx.Currency,
@@ -931,13 +1038,11 @@ func (s *Server) transactionToResponse(tx *models.Transaction) TransactionRespon
 	}
 
 	if tx.FromWalletID != nil {
-		fromID := tx.FromWalletID.String()
-		resp.FromWalletID = &fromID
+		resp.FromWalletID = tx.FromWalletID
 	}
 
 	if tx.ToWalletID != nil {
-		toID := tx.ToWalletID.String()
-		resp.ToWalletID = &toID
+		resp.ToWalletID = tx.ToWalletID
 	}
 
 	if tx.IdempotencyKey != nil {
@@ -945,16 +1050,4 @@ func (s *Server) transactionToResponse(tx *models.Transaction) TransactionRespon
 	}
 
 	return resp
-}
-
-func (s *Server) sendJSON(w http.ResponseWriter, data interface{}, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
-		logrus.WithError(err).Error("failed to encode response")
-	}
-}
-
-func (s *Server) sendError(w http.ResponseWriter, message string, status int) {
-	s.sendJSON(w, ErrorResponse{Error: message}, status)
 }

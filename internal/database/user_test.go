@@ -16,7 +16,7 @@ func TestUserRepository_Create(t *testing.T) {
 	repo := NewUserRepository(db)
 
 	user := &models.User{
-		ID:           uuid.New(),
+		ID:           uuid.NewString(),
 		Email:        "test@example.com",
 		PasswordHash: "hashedpassword",
 		CreatedAt:    time.Now(),
@@ -32,7 +32,7 @@ func TestUserRepository_GetByEmail(t *testing.T) {
 	repo := NewUserRepository(db)
 
 	user := &models.User{
-		ID:           uuid.New(),
+		ID:           uuid.NewString(),
 		Email:        "find@example.com",
 		PasswordHash: "hash",
 		CreatedAt:    time.Now(),
@@ -61,7 +61,7 @@ func TestUserRepository_GetByID(t *testing.T) {
 	repo := NewUserRepository(db)
 
 	user := &models.User{
-		ID:           uuid.New(),
+		ID:           uuid.NewString(),
 		Email:        "byid@example.com",
 		PasswordHash: "hash",
 		CreatedAt:    time.Now(),

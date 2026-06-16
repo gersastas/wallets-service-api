@@ -1,21 +1,20 @@
-package jwtutil
+package auth
 
 import (
 	"fmt"
 	"time"
 
 	jwt "github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 )
 
 const tokenTTL = 24 * time.Hour
 
 type Claims struct {
-	UserID uuid.UUID `json:"user_id"`
+	UserID string `json:"user_id"`
 	jwt.RegisteredClaims
 }
 
-func Generate(userID uuid.UUID, secret string) (string, error) {
+func Generate(userID string, secret string) (string, error) {
 	claims := Claims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
